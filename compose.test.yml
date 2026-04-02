@@ -1,0 +1,65 @@
+networks:
+  online-net:
+    driver: bridge
+
+volumes:
+  pkg-transfer:
+  mirror-store:
+  cargo-home:
+
+services:
+  mock-registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mock-registry
+    networks: [online-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 2s
+      retries: 10
+
+  online:
+    image: frostmirror:test
+    depends_on:
+      mock-registry: { condition: service_healthy }
+    environment:
+      - FROSTMIRROR_REGISTRY_URL=http://mock-registry/index
+      - FROSTMIRROR_DIST_URL=http://mock-registry/dist
+      - FROSTMIRROR_OUTPUT=/transfer
+      - FROSTMIRROR_HISTORY=/transfer/history
+      - RUST_LOG=debug
+    volumes:
+      - ./tests/integration/fixtures:/fixtures:ro
+      - pkg-transfer:/transfer
+    networks: [online-net]
+
+  airgap:
+    image: frostmirror:test
+    environment:
+      - FROSTMIRROR_INCOMING=/transfer
+      - FROSTMIRROR_MIRROR=/mirror
+      - FROSTMIRROR_BIND=0.0.0.0:8080
+      - FROSTMIRROR_BASE_URL=http://airgap:8080
+      - RUST_LOG=debug
+    volumes:
+      - pkg-transfer:/transfer
+      - mirror-store:/mirror
+    network_mode: none
+    ports:
+      - "18080:8080"
+    command: serve --watch-incoming
+
+  test-runner:
+    image: frostmirror:test
+    depends_on:
+      - online
+      - airgap
+    environment:
+      - AIRGAP_BASE_URL=http://host.docker.internal:18080
+    volumes:
+      - ./tests:/tests:ro
+      - pkg-transfer:/transfer
+      - cargo-home:/usr/local/cargo
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [online-net]
+    command: cargo test --test integration -- --test-threads=1

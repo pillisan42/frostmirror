@@ -1,0 +1,7 @@
+[dependencies]
+tokio = "1.50.0"
+serde = "1.0.210"
+
+[platforms]
+targets = ["x86_64-unknown-linux-gnu"]
+toolchain = "stable"

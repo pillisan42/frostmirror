@@ -1,0 +1,20 @@
+[package]
+name = "frostmirror-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Package extraction and mirror merge for frostmirror"
+
+[dependencies]
+frostmirror-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,67 @@
+[workspace]
+members = [
+    "crates/frostmirror-core",
+    "crates/frostmirror-fetch",
+    "crates/frostmirror-import",
+    "crates/frostmirror-serve",
+    "crates/frostmirror",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/frostmirror"
+
+[workspace.dependencies]
+# Internal crates
+frostmirror-core = { path = "crates/frostmirror-core" }
+frostmirror-fetch = { path = "crates/frostmirror-fetch" }
+frostmirror-import = { path = "crates/frostmirror-import" }
+frostmirror-serve = { path = "crates/frostmirror-serve" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# HTTP
+reqwest = { version = "0.12", features = ["rustls-tls", "stream", "blocking"], default-features = false }
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+
+# Compression
+brotli = "6"
+
+# Hashing
+sha2 = "0.10"
+hex = "0.4"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# File watching
+notify = "6"
+
+# Semver
+semver = { version = "1", features = ["serde"] }
+
+# Misc
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3"
+walkdir = "2"
+rust-embed = { version = "8", features = ["axum"] }
+mime_guess = "2"

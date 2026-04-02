@@ -1,0 +1,18 @@
+services:
+  fetch:
+    image: frostmirror:latest
+    command: fetch
+    environment:
+      - FROSTMIRROR_MODE=${FROSTMIRROR_MODE:-full}
+      - FROSTMIRROR_PLATFORMS=${FROSTMIRROR_PLATFORMS:-x86_64-unknown-linux-gnu}
+      - FROSTMIRROR_TOOLCHAIN=${FROSTMIRROR_TOOLCHAIN:-stable}
+      - FROSTMIRROR_OUTPUT=/pkgs
+    volumes:
+      - ./depends.toml:/config/depends.toml:ro
+      - pkg-out:/pkgs
+      - pkg-history:/pkg-history
+    network_mode: bridge
+
+volumes:
+  pkg-out:
+  pkg-history:

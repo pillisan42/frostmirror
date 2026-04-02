@@ -1,0 +1,29 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - cargo-cache:/usr/local/cargo/registry
+      - build-cache:/workspace/target
+    working_dir: /workspace
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+    command: cargo watch -x "build -p frostmirror"
+
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - cargo-cache:/usr/local/cargo/registry
+      - build-cache:/workspace/target
+    working_dir: /workspace
+    command: cargo test --workspace
+
+volumes:
+  cargo-cache:
+  build-cache:

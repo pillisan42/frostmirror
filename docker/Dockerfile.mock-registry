@@ -1,0 +1,59 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir flask
+
+WORKDIR /app
+COPY tests/integration/fixtures /fixtures
+
+COPY <<'SCRIPT' /app/server.py
+import os, json, hashlib
+from flask import Flask, send_from_directory, jsonify, abort, Response
+
+app = Flask(__name__)
+FIXTURES = '/fixtures'
+CRATES_DIR = os.path.join(FIXTURES, 'crates')
+INDEX_DIR = os.path.join(FIXTURES, 'mock-index')
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
+
+@app.route('/index/config.json')
+def index_config():
+    return jsonify({
+        "dl": "http://mock-registry/crates/{crate}/{version}/download",
+        "api": "http://mock-registry"
+    })
+
+@app.route('/index/<path:path>')
+def index_entry(path):
+    file_path = os.path.join(INDEX_DIR, path)
+    if os.path.exists(file_path):
+        with open(file_path) as f:
+            return Response(f.read(), mimetype='text/plain')
+    abort(404)
+
+@app.route('/crates/<name>/<version>/download')
+def download_crate(name, version):
+    filename = f'{name}-{version}.crate'
+    crate_path = os.path.join(CRATES_DIR, filename)
+    if os.path.exists(crate_path):
+        return send_from_directory(CRATES_DIR, filename,
+                                   mimetype='application/octet-stream')
+    abort(404)
+
+@app.route('/dist/<path:path>')
+def dist(path):
+    dist_dir = os.path.join(FIXTURES, 'dist')
+    file_path = os.path.join(dist_dir, path)
+    if os.path.exists(file_path):
+        return send_from_directory(dist_dir, path,
+                                   mimetype='application/octet-stream')
+    abort(404)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=80)
+SCRIPT
+
+EXPOSE 80
+CMD ["python", "server.py"]

@@ -1,0 +1,21 @@
+[package]
+name = "frostmirror-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core library for frostmirror: dependency resolution, bundle format, and diff logic"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+semver = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+brotli = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }

@@ -1,0 +1,9 @@
+[dependencies]
+# dep-a requires serde = "=1.0.0"
+dep-a = "1.0.0"
+# dep-b requires serde = "=1.0.210"
+dep-b = "1.0.0"
+
+[platforms]
+targets = ["x86_64-unknown-linux-gnu"]
+toolchain = "stable"

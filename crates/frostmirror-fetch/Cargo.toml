@@ -1,0 +1,21 @@
+[package]
+name = "frostmirror-fetch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Download engine for frostmirror: crates.io sparse index and rustup dist"
+
+[dependencies]
+frostmirror-core = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+semver = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }

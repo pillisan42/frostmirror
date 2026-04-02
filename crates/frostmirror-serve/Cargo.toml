@@ -1,0 +1,25 @@
+[package]
+name = "frostmirror-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP registry server and web UI for frostmirror"
+
+[dependencies]
+frostmirror-core = { workspace = true }
+frostmirror-import = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+notify = { workspace = true }
+chrono = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }
+walkdir = { workspace = true }

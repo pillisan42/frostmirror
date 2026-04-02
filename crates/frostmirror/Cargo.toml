@@ -1,0 +1,23 @@
+[package]
+name = "frostmirror"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight dependency-scoped Rust mirror for air-gapped environments"
+
+[[bin]]
+name = "frostmirror"
+path = "src/main.rs"
+
+[dependencies]
+frostmirror-core = { workspace = true }
+frostmirror-fetch = { workspace = true }
+frostmirror-import = { workspace = true }
+frostmirror-serve = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
