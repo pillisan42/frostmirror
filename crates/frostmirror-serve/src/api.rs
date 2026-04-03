@@ -37,16 +37,35 @@ struct StatusResponse {
 }
 
 async fn get_status(State(state): State<SharedState>) -> impl IntoResponse {
-    let importer = Importer::new(state.mirror_dir.clone());
-    let status = importer.status().unwrap_or(frostmirror_import::importer::MirrorStatus {
-        crate_count: 0,
-        total_size: 0,
-        last_import: None,
-    });
-
-    let done_count = count_files_in(&state.incoming_dir.join("done")).unwrap_or(0);
-    let failed_count = count_files_in(&state.incoming_dir.join("failed")).unwrap_or(0);
+    let mirror_dir = state.mirror_dir.clone();
+    let incoming_dir = state.incoming_dir.clone();
     let watcher_active = *state.watcher_active.read().await;
+
+    // Run blocking I/O (walkdir, file stat) off the async runtime
+    let result = tokio::task::spawn_blocking(move || {
+        let importer = Importer::new(mirror_dir);
+        let status = importer.status().unwrap_or(frostmirror_import::importer::MirrorStatus {
+            crate_count: 0,
+            total_size: 0,
+            last_import: None,
+        });
+        let done_count = count_files_in(&incoming_dir.join("done")).unwrap_or(0);
+        let failed_count = count_files_in(&incoming_dir.join("failed")).unwrap_or(0);
+        (status, done_count, failed_count)
+    })
+    .await;
+
+    let (status, done_count, failed_count) = result.unwrap_or_else(|_| {
+        (
+            frostmirror_import::importer::MirrorStatus {
+                crate_count: 0,
+                total_size: 0,
+                last_import: None,
+            },
+            0,
+            0,
+        )
+    });
 
     Json(StatusResponse {
         crate_count: status.crate_count,
@@ -67,35 +86,43 @@ struct PackageEntry {
 }
 
 async fn get_packages(State(state): State<SharedState>) -> impl IntoResponse {
-    let mut packages = Vec::new();
+    let incoming_dir = state.incoming_dir.clone();
 
-    // List done packages
-    if let Ok(entries) = std::fs::read_dir(state.incoming_dir.join("done")) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                packages.push(PackageEntry {
-                    filename: entry.file_name().to_string_lossy().to_string(),
-                    size: meta.len(),
-                    status: "imported".to_string(),
-                });
+    let packages = tokio::task::spawn_blocking(move || {
+        let mut packages = Vec::new();
+
+        // List done packages
+        if let Ok(entries) = std::fs::read_dir(incoming_dir.join("done")) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    packages.push(PackageEntry {
+                        filename: entry.file_name().to_string_lossy().to_string(),
+                        size: meta.len(),
+                        status: "imported".to_string(),
+                    });
+                }
             }
         }
-    }
 
-    // List failed packages
-    if let Ok(entries) = std::fs::read_dir(state.incoming_dir.join("failed")) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                packages.push(PackageEntry {
-                    filename: entry.file_name().to_string_lossy().to_string(),
-                    size: meta.len(),
-                    status: "failed".to_string(),
-                });
+        // List failed packages
+        if let Ok(entries) = std::fs::read_dir(incoming_dir.join("failed")) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    packages.push(PackageEntry {
+                        filename: entry.file_name().to_string_lossy().to_string(),
+                        size: meta.len(),
+                        status: "failed".to_string(),
+                    });
+                }
             }
         }
-    }
 
-    packages.sort_by(|a, b| b.filename.cmp(&a.filename));
+        packages.sort_by(|a, b| b.filename.cmp(&a.filename));
+        packages
+    })
+    .await
+    .unwrap_or_default();
+
     Json(packages)
 }
 
@@ -138,7 +165,7 @@ async fn get_deps(State(state): State<SharedState>) -> impl IntoResponse {
 
 #[derive(Deserialize)]
 struct DepsUpdate {
-    dependencies: std::collections::BTreeMap<String, String>,
+    dependencies: std::collections::BTreeMap<String, frostmirror_core::depends::DepEntry>,
     #[serde(default)]
     platforms: Option<frostmirror_core::depends::Platforms>,
 }
@@ -199,12 +226,23 @@ async fn get_incoming(State(state): State<SharedState>) -> impl IntoResponse {
 }
 
 async fn post_gc(State(state): State<SharedState>) -> impl IntoResponse {
-    let gc = GarbageCollector::new(state.mirror_dir.clone());
-    match gc.run() {
-        Ok(result) => (StatusCode::OK, Json(serde_json::to_value(result).unwrap())),
-        Err(e) => (
+    let mirror_dir = state.mirror_dir.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let gc = GarbageCollector::new(mirror_dir);
+        gc.run()
+    })
+    .await;
+
+    match result {
+        Ok(Ok(gc_result)) => (StatusCode::OK, Json(serde_json::to_value(gc_result).unwrap())),
+        Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("gc task failed: {}", e)})),
         ),
     }
 }
@@ -212,7 +250,7 @@ async fn post_gc(State(state): State<SharedState>) -> impl IntoResponse {
 async fn get_cargo_config(State(state): State<SharedState>) -> impl IntoResponse {
     let config = format!(
         r#"[source.frostmirror]
-registry = "{base_url}/index"
+registry = "sparse+{base_url}/index/"
 
 [source.crates-io]
 replace-with = "frostmirror"

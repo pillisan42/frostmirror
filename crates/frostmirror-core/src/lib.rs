@@ -8,4 +8,4 @@ pub use bundle::{Bundle, BundleBuilder, BundleReader, Section, SectionKind};
 pub use config::FrostmirrorConfig;
 pub use depends::DependsToml;
 pub use manifest::Manifest;
-pub use resolver::{ResolvedCrate, ResolvedGraph};
+pub use resolver::{ResolvedCrate, ResolvedGraph, Resolver};

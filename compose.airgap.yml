@@ -3,15 +3,16 @@ services:
     image: frostmirror:latest
     command: serve --watch-incoming
     environment:
-      - FROSTMIRROR_BASE_URL=http://frostmirror.internal:8080
+    #frostmirror.internal
+      - FROSTMIRROR_BASE_URL=http://localhost:8080
       - FROSTMIRROR_BIND=0.0.0.0:8080
     volumes:
       - ./incoming:/incoming     # host dir — drop .pkg files here
-      - mirror-store:/mirror
+      - ./mirror:/mirror
     ports:
       - "8080:8080"
-    network_mode: none           # hard air-gap: no outbound network
+    #network_mode: none           # hard air-gap: no outbound network
     restart: unless-stopped
 
-volumes:
-  mirror-store:
+#volumes:
+ # mirror-store:

@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -9,22 +9,31 @@ use std::path::PathBuf;
 use crate::server::SharedState;
 
 /// Routes for the Cargo sparse registry protocol and rustup dist serving.
+///
+/// The index is mounted via `nest` so its routes are isolated and cannot
+/// conflict with routes defined in the web or API routers.
 pub fn routes(state: SharedState) -> Router {
+    // Sub-router for /index — uses fallback to handle arbitrary crate paths
+    let index_router = Router::new()
+        .route("/config.json", get(index_config))
+        .fallback(index_fallback)
+        .with_state(state.clone());
+
+    // Sub-router for /crates — uses fallback to handle download requests.
+    // This avoids issues with axum route matching and URL encoding.
+    let crates_router = Router::new()
+        .fallback(crates_fallback)
+        .with_state(state.clone());
+
     Router::new()
-        // Sparse index: config.json
-        .route("/index/config.json", get(index_config))
-        // Sparse index: crate entries (1-char, 2-char, 3-char, 4+-char paths)
-        .route("/index/1/{name}", get(index_entry))
-        .route("/index/2/{name}", get(index_entry))
-        .route("/index/3/{prefix}/{name}", get(index_entry))
-        .route("/index/{a}/{b}/{name}", get(index_entry))
-        // Crate downloads
-        .route("/crates/{name}/{version}/download", get(download_crate))
+        .nest("/index", index_router)
+        .nest("/crates", crates_router)
         // Rustup dist
         .route("/rustup/dist/{target}/{filename}", get(rustup_dist))
         .with_state(state)
 }
 
+/// Dynamically generated sparse index config.json.
 async fn index_config(State(state): State<SharedState>) -> impl IntoResponse {
     let config = serde_json::json!({
         "dl": format!("{}/crates/{{crate}}/{{version}}/download", state.base_url),
@@ -38,30 +47,41 @@ async fn index_config(State(state): State<SharedState>) -> impl IntoResponse {
     )
 }
 
-async fn index_entry(
-    State(state): State<SharedState>,
-    Path(_params): Path<Vec<(String, String)>>,
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
-    // Reconstruct the path relative to /index/
-    let uri_path = uri.path();
-    let relative = uri_path.strip_prefix("/index/").unwrap_or(uri_path);
-    let file_path = state.mirror_dir.join("index").join(relative);
+/// Fallback handler for all index paths.
+async fn index_fallback(State(state): State<SharedState>, req: Request) -> Response {
+    let uri_path = req.uri().path();
+    let relative = uri_path.strip_prefix('/').unwrap_or(uri_path);
 
+    if relative.is_empty() {
+        return (StatusCode::NOT_FOUND, "index: empty path").into_response();
+    }
+
+    if relative.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    }
+
+    let file_path = state.mirror_dir.join("index").join(relative);
     serve_file(&file_path, "text/plain").await
 }
 
-async fn download_crate(
-    State(state): State<SharedState>,
-    Path((name, version)): Path<(String, String)>,
-) -> impl IntoResponse {
-    let file_path = state
-        .mirror_dir
-        .join("crates")
-        .join(&name)
-        .join(&version)
-        .join("download");
+/// Fallback handler for crate downloads.
+///
+/// Handles requests like `/crates/aho-corasick/1.1.4/download`.
+/// Because this is nested under `/crates`, axum strips that prefix.
+/// We receive e.g. `/aho-corasick/1.1.4/download`.
+async fn crates_fallback(State(state): State<SharedState>, req: Request) -> Response {
+    let uri_path = req.uri().path();
+    let relative = uri_path.strip_prefix('/').unwrap_or(uri_path);
 
+    tracing::debug!("crate download request: {}", relative);
+
+    if relative.is_empty() || relative.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    }
+
+    // Expected format: {name}/{version}/download
+    // Serve the file directly from mirror/crates/{relative}
+    let file_path = state.mirror_dir.join("crates").join(relative);
     serve_file(&file_path, "application/octet-stream").await
 }
 
@@ -80,6 +100,8 @@ async fn rustup_dist(
 }
 
 async fn serve_file(path: &PathBuf, content_type: &str) -> Response {
+    tracing::debug!("serving file: {}", path.display());
+
     match tokio::fs::read(path).await {
         Ok(data) => {
             let mut headers = HeaderMap::new();
@@ -87,6 +109,9 @@ async fn serve_file(path: &PathBuf, content_type: &str) -> Response {
             headers.insert("content-length", data.len().to_string().parse().unwrap());
             (StatusCode::OK, headers, Body::from(data)).into_response()
         }
-        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+        Err(e) => {
+            tracing::debug!("file not found: {} ({})", path.display(), e);
+            (StatusCode::NOT_FOUND, format!("not found: {}", path.display())).into_response()
+        }
     }
 }

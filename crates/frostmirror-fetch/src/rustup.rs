@@ -2,6 +2,16 @@ use anyhow::{Context, Result};
 
 const DEFAULT_DIST_URL: &str = "https://static.rust-lang.org";
 
+/// Return the correct rustup-init binary name for a target triple.
+/// Windows targets use `rustup-init.exe`, everything else uses `rustup-init`.
+pub fn rustup_init_filename(target: &str) -> &'static str {
+    if target.contains("windows") {
+        "rustup-init.exe"
+    } else {
+        "rustup-init"
+    }
+}
+
 /// Download rustup-init for a given target triple.
 pub async fn download_rustup_init(
     client: &reqwest::Client,
@@ -9,8 +19,9 @@ pub async fn download_rustup_init(
     target: &str,
 ) -> Result<Vec<u8>> {
     let base = dist_url.unwrap_or(DEFAULT_DIST_URL);
-    let url = format!("{}/rustup/dist/{}/rustup-init", base, target);
-    tracing::info!("downloading rustup-init for {} from {}", target, url);
+    let filename = rustup_init_filename(target);
+    let url = format!("{}/rustup/dist/{}/{}", base, target, filename);
+    tracing::info!("downloading {} for {} from {}", filename, target, url);
 
     let resp = client
         .get(&url)

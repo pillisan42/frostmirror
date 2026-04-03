@@ -1,5 +1,5 @@
 # stage 1: builder
-FROM rust:1.77-slim AS builder
+FROM rust:1.86-slim AS builder
 
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -2,7 +2,7 @@
 
 A lightweight, dependency-scoped Rust mirror tool designed for air-gapped environments.
 
-Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), frostmirror only fetches the crates required to build your specific project. It resolves the full transitive dependency graph, downloads exactly what is needed, and packages everything into a single timestamped `.pkg` bundle compressed with brotli. Bundles are designed for incremental transfer across an air gap -- only the delta since the last bundle needs to be transported.
+Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), frostmirror only fetches the crates required to build your specific project. It delegates dependency resolution to cargo itself, downloads exactly what is needed, and packages everything into a single timestamped `.pkg` bundle compressed with brotli. Bundles are designed for incremental transfer across an air gap -- only the delta since the last bundle needs to be transported.
 
 ---
 
@@ -13,6 +13,7 @@ Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), fro
 - [Core Concepts](#core-concepts)
 - [CLI Reference](#cli-reference)
 - [Docker Usage](#docker-usage)
+- [Docker Image Scripts](#docker-image-scripts)
 - [Air-Gap Workflow](#air-gap-workflow)
 - [Web UI](#web-ui)
 - [API Reference](#api-reference)
@@ -26,24 +27,22 @@ Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), fro
 
 ## Quick Start
 
-This section walks you through the most common scenario: producing a `.pkg` bundle on an internet-connected machine, transferring it to an air-gapped machine, and using it to install Rust crates offline.
-
 ### Step 1 -- Define your dependencies
 
 Create a `depends.toml` file listing the crates your project needs:
 
 ```toml
 [dependencies]
-tokio = "1.50.0"
-serde = "1.0.210"
-axum = "0.7.5"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+serde = { version = "1", features = ["derive"] }
+axum = "0.7"
 
 [platforms]
 targets = ["x86_64-unknown-linux-gnu"]
 toolchain = "stable"
 ```
 
-You only need to list direct dependencies. frostmirror resolves the entire transitive dependency tree automatically.
+You only need to list direct dependencies. frostmirror delegates to `cargo generate-lockfile` to resolve the entire transitive dependency tree -- features, optional deps, and platform-specific deps are all handled by cargo's own resolver.
 
 ### Step 2 -- Fetch (online machine)
 
@@ -51,11 +50,9 @@ You only need to list direct dependencies. frostmirror resolves the entire trans
 frostmirror fetch --config depends.toml --output ./releases/
 ```
 
-This produces a file like `20260402-2130-crates.pkg` in `./releases/`. The bundle contains every `.crate` file, sparse index slices, rustup binaries, and a cargo config -- everything needed to build offline.
+This produces a file like `20260402-2130-crates.pkg` in `./releases/`. The bundle contains every `.crate` file, sparse index entries, rustup binaries, and a cargo config.
 
 ### Step 3 -- Transfer across the air gap
-
-Copy the `.pkg` file to a USB drive (or any other medium):
 
 ```bash
 cp ./releases/20260402-2130-crates.pkg /media/usb/
@@ -63,7 +60,7 @@ cp ./releases/20260402-2130-crates.pkg /media/usb/
 
 ### Step 4 -- Import (offline machine)
 
-On the air-gapped machine, drop the `.pkg` file into the incoming directory:
+Drop the `.pkg` file into the incoming directory:
 
 ```bash
 cp /media/usb/20260402-2130-crates.pkg ./incoming/
@@ -77,22 +74,18 @@ frostmirror import 20260402-2130-crates.pkg --mirror /mirror
 
 ### Step 5 -- Build your project offline
 
-Configure cargo on the offline machine to use the frostmirror registry:
-
-```bash
+```toml
 # ~/.cargo/config.toml
-cat > ~/.cargo/config.toml << 'EOF'
 [source.frostmirror]
-registry = "http://frostmirror.internal:8080/index"
+registry = "sparse+http://frostmirror.internal:8080/index/"
 
 [source.crates-io]
 replace-with = "frostmirror"
-EOF
-
-cargo build
 ```
 
-That's it. `cargo build` now resolves all crates from your local frostmirror registry.
+```bash
+cargo build  # resolves everything from frostmirror
+```
 
 ---
 
@@ -115,7 +108,7 @@ cargo install frostmirror
 ### Docker
 
 ```bash
-docker build -t frostmirror:latest .
+docker build -t frostmirror:latest -f docker/Dockerfile .
 ```
 
 ---
@@ -124,20 +117,53 @@ docker build -t frostmirror:latest .
 
 ### `depends.toml`
 
-The single source of truth for what gets mirrored. You declare your direct dependencies and target platforms; frostmirror resolves everything else.
+The single source of truth for what gets mirrored. Three formats are supported and can be mixed freely:
 
 ```toml
 [dependencies]
-tokio = "1.50.0"
-serde = "1.0.210"
-reqwest = "0.12.4"
+# Simple -- just a version string
+anyhow = "1"
+
+# Extended -- version + features (same syntax as Cargo.toml)
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+
+# Extended -- disable default features
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Multiple versions of the same crate -- use an array
+# Useful when mirroring for multiple projects with conflicting requirements
+serde_json = ["1.0.60", "1.0.120"]
 
 [platforms]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 toolchain = "stable"
 ```
 
-**Version strings** follow semver. If multiple transitive dependencies require different versions of the same crate, frostmirror includes all required versions -- it deduplicates by `(name, version)` pairs.
+**Version strings** follow semver (e.g. `"1"`, `"1.50.0"`, `">=0.12, <0.13"`).
+
+**Features** are passed directly to cargo's resolver. If a crate has optional dependencies activated through features (like `ratatui` activating `ratatui-crossterm` via its `crossterm` default feature), they are automatically included.
+
+**Multiple versions** of the same crate are supported via the array syntax. Each version is resolved independently so conflicting requirements across projects don't cause errors.
+
+### Dependency resolution
+
+frostmirror delegates resolution entirely to **cargo itself**. For each dependency in `depends.toml`, frostmirror:
+
+1. Creates a temporary Cargo project with that dependency
+2. Runs `cargo generate-lockfile` to produce an exact `Cargo.lock`
+3. Parses the lock file to extract all `(name, version)` pairs
+4. Merges results across all dependencies, deduplicating by `(name, version)`
+
+This two-pass strategy ensures complete coverage:
+
+| Pass | What it does | What it catches |
+|---|---|---|
+| **Combined** | All deps in one `Cargo.toml` | Unified transitive versions (version unification) |
+| **Per-dependency** | Each dep in its own `Cargo.toml` | Conflict-specific versions, multi-version entries |
+
+The result is the union of both passes. Because cargo does the resolution, all features, optional deps, platform-specific deps, and version unification are handled exactly as they would be in a real `cargo build`.
 
 ### `.pkg` bundle format
 
@@ -148,7 +174,7 @@ Each bundle is a brotli-compressed archive with a custom binary format:
 | `manifest.json` | Resolved dep graph, SHA-256 hashes, parent `.pkg` reference |
 | `rustup/` | `rustup-init` binaries for declared target platforms |
 | `crates/` | `.crate` files for all resolved packages |
-| `index/` | Sparse index slices for crates present in this bundle |
+| `index/` | Sparse index entries for all resolved crates |
 | `config.toml` | Ready-to-use cargo source replacement config |
 
 **Filename scheme:** `YYYYMMDD-HHMM-crates.pkg` (e.g. `20260402-2130-crates.pkg`)
@@ -165,7 +191,10 @@ frostmirror fetch --output ./releases/
 frostmirror fetch --incremental --output ./releases/
 ```
 
-Delta bundles include a `parent` field in their manifest referencing the previous `.pkg`, enabling chain validation on import.
+Incremental bundles include:
+- **New `.crate` files** -- only crates not in the previous manifest
+- **Full index entries** -- for all resolved crates (not just new ones), so cargo can resolve correctly on the air-gap side
+- **Rustup binaries** -- for any new target platforms added since the last bundle
 
 If no history exists, `--incremental` automatically falls back to a full fetch with a warning.
 
@@ -181,9 +210,12 @@ On the offline machine, the serve command can watch for new `.pkg` files:
 ```
 
 When a `.pkg` file appears in `./incoming/`:
-1. SHA-256 manifest check runs
-2. If valid: merge into mirror atomically, move `.pkg` to `done/`
-3. If invalid: move to `failed/`, log the error, mirror is untouched
+1. Waits for the file write to complete (size stability check)
+2. SHA-256 manifest check and per-crate hash verification
+3. If valid: merge into mirror atomically, move `.pkg` to `done/`
+4. If invalid: move to `failed/`, log the error, mirror is untouched
+
+The watcher runs on a dedicated thread so it never blocks the HTTP server.
 
 ---
 
@@ -216,6 +248,8 @@ frostmirror fetch --config /path/to/depends.toml --output /path/to/output/
 frostmirror fetch --incremental --output ./releases/
 ```
 
+**Note:** `cargo` must be installed on the machine running `fetch`, since frostmirror uses `cargo generate-lockfile` for dependency resolution.
+
 ### `frostmirror import`
 
 Import a `.pkg` bundle into the local mirror store.
@@ -231,11 +265,7 @@ frostmirror import <FILE> [OPTIONS]
 **Examples:**
 
 ```bash
-# Import a bundle
 frostmirror import 20260402-2130-crates.pkg --mirror /data/mirror
-
-# Import with default mirror path
-frostmirror import ./releases/20260402-2130-crates.pkg
 ```
 
 ### `frostmirror serve`
@@ -257,9 +287,6 @@ frostmirror serve [OPTIONS]
 **Examples:**
 
 ```bash
-# Basic serve
-frostmirror serve --mirror /data/mirror
-
 # Serve with auto-import and custom URL
 frostmirror serve \
   --bind 0.0.0.0:3000 \
@@ -277,36 +304,19 @@ Check the integrity of a `.pkg` bundle before transporting or importing it.
 frostmirror verify <FILE>
 ```
 
-**Example:**
-
 ```bash
 frostmirror verify 20260402-2130-crates.pkg
-# OK -- 47 crates, 2 rustup artifacts
+# OK -- 183 crates, 2 rustup artifacts
 ```
-
-Verification checks:
-- Bundle decompression and format validity
-- Manifest SHA-256 hash
-- Per-crate file SHA-256 against manifest entries
 
 ### `frostmirror status`
 
 Display current mirror state.
 
 ```bash
-frostmirror status [OPTIONS]
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--mirror <DIR>` | `/mirror` | Mirror directory |
-
-**Example:**
-
-```bash
 frostmirror status --mirror /data/mirror
-# Crate count:  47
-# Total size:   12458923 bytes
+# Crate count:  183
+# Total size:   45231872 bytes
 # Last import:  2026-04-02T21:30:00+00:00
 ```
 
@@ -315,21 +325,11 @@ frostmirror status --mirror /data/mirror
 Garbage collect crates no longer referenced by the current manifest.
 
 ```bash
-frostmirror gc [OPTIONS]
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--mirror <DIR>` | `/mirror` | Mirror directory |
-
-**Example:**
-
-```bash
 frostmirror gc --mirror /data/mirror
 # Removed 3 crates, freed 1248576 bytes
 ```
 
-Removed dependencies are **never pruned automatically** -- this prevents breaking builds that still reference older crates. You must run `gc` explicitly.
+Removed dependencies are **never pruned automatically**. You must run `gc` explicitly.
 
 ---
 
@@ -338,45 +338,62 @@ Removed dependencies are **never pruned automatically** -- this prevents breakin
 ### Development
 
 ```bash
-# Start dev environment with hot-reload
-docker compose -f compose.dev.yml up dev
-
-# Run tests
-docker compose -f compose.dev.yml run --rm test
+docker compose -f compose.dev.yml up dev    # hot-reload
+docker compose -f compose.dev.yml run --rm test  # tests
 ```
 
 ### Online machine -- Docker fetch
 
 ```bash
-# Full fetch
 FROSTMIRROR_MODE=full docker compose -f compose.fetch.yml run --rm fetch
-
-# Incremental fetch
 FROSTMIRROR_MODE=incremental docker compose -f compose.fetch.yml run --rm fetch
-```
-
-The `.pkg` files are written to the `pkg-out` Docker volume. Copy them to your transfer medium:
-
-```bash
-# Find where Docker stores the volume
-docker volume inspect frostmirror_pkg-out --format '{{ .Mountpoint }}'
-
-# Or copy from a temporary container
-docker run --rm -v frostmirror_pkg-out:/pkgs -v $(pwd):/out busybox \
-  cp /pkgs/*.pkg /out/
 ```
 
 ### Offline machine -- Air-gapped registry
 
 ```bash
-# Start the registry (runs permanently)
 docker compose -f compose.airgap.yml up -d
-
-# Check status
 curl http://localhost:8080/api/status
 ```
 
 The container uses `network_mode: none` -- no outbound network at all. Drop `.pkg` files into `./incoming/` and they are imported automatically.
+
+---
+
+## Docker Image Scripts
+
+Three helper scripts in `scripts/` handle the full lifecycle of Docker images.
+
+| Script | Purpose | Run on |
+|---|---|---|
+| `scripts/build.sh` | Build all Docker images from source | Online machine |
+| `scripts/export.sh` | Save images to a compressed `.tar.gz` archive | Online machine |
+| `scripts/import.sh` | Load images from the archive into Docker | Offline machine |
+
+### `scripts/build.sh`
+
+```bash
+./scripts/build.sh                # all images
+./scripts/build.sh --production   # only frostmirror:latest
+./scripts/build.sh --no-cache     # clean rebuild
+```
+
+The production image uses a multi-stage build: `rust:1.86-slim` for compilation, `debian:bookworm-slim` for the final runtime (~15 MB).
+
+### `scripts/export.sh`
+
+```bash
+./scripts/export.sh                          # all images -> ./export/
+./scripts/export.sh --production             # only production image
+./scripts/export.sh --output /media/usb/     # write to USB drive
+```
+
+### `scripts/import.sh`
+
+```bash
+./scripts/import.sh /media/usb/frostmirror-images-20260402-2130.tar.gz
+docker compose -f compose.airgap.yml up -d
+```
 
 ---
 
@@ -387,83 +404,99 @@ The container uses `network_mode: none` -- no outbound network at all. Drop `.pk
 **On the online machine:**
 
 ```bash
-# 1. Create depends.toml for your project
+# 1. Build and export the Docker image
+./scripts/build.sh --production
+./scripts/export.sh --production --output /media/usb/
+
+# 2. Create depends.toml
 cat > depends.toml << 'EOF'
 [dependencies]
-tokio = "1.50.0"
-serde = "1.0.210"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = "4"
+clap = { version = "4", features = ["derive"] }
 
 [platforms]
 targets = ["x86_64-unknown-linux-gnu"]
 toolchain = "stable"
 EOF
 
-# 2. Fetch everything
+# 3. Fetch everything
 frostmirror fetch --output ./releases/
 
-# 3. Verify before transport
+# 4. Verify before transport
 frostmirror verify ./releases/20260402-2130-crates.pkg
 ```
 
 **Transfer:**
 
 ```bash
-# Copy to USB (or any transfer medium)
 cp ./releases/20260402-2130-crates.pkg /media/usb/
 ```
 
 **On the offline machine:**
 
 ```bash
-# 4. Start the registry (first time only)
+# 5. Load the Docker image (first time, or when updating)
+./scripts/import.sh /media/usb/frostmirror-images-20260402-2130.tar.gz
+
+# 6. Start the registry (first time only)
 docker compose -f compose.airgap.yml up -d
 
-# 5. Drop the bundle
+# 7. Drop the bundle
 cp /media/usb/20260402-2130-crates.pkg ./incoming/
 
-# 6. Wait a moment, then verify the import
+# 8. Verify the import
 curl http://localhost:8080/api/status
-# {"crate_count":47,"total_size":12458923,...}
 
-# 7. Configure cargo on each developer machine
+# 9. Configure cargo on each developer machine
 cat > ~/.cargo/config.toml << 'EOF'
 [source.frostmirror]
-registry = "http://frostmirror.internal:8080/index"
+registry = "sparse+http://frostmirror.internal:8080/index/"
 
 [source.crates-io]
 replace-with = "frostmirror"
 EOF
 
-# 8. Build your project
-cargo build  # resolves everything from frostmirror
+# 10. Build your project
+cargo build
 ```
 
 ### Subsequent updates
 
-When dependencies change, only the delta needs to cross the air gap:
-
 ```bash
-# Online machine
+# Online: delta only
 frostmirror fetch --incremental --output ./releases/
-# Produces a small delta .pkg
 
 # Transfer just the new .pkg
 cp ./releases/20260403-1000-crates.pkg /media/usb/
 
-# Offline machine -- drop it in
+# Offline: drop it in
 cp /media/usb/20260403-1000-crates.pkg ./incoming/
-# Auto-imported, old crates preserved
+# Auto-imported, old crates preserved, new targets included
 ```
+
+### Mirroring for multiple projects
+
+If different projects on the air-gap need conflicting dependency versions, list them all in `depends.toml`:
+
+```toml
+[dependencies]
+# Project A uses an older serde
+serde = ["=1.0.100", { version = "1", features = ["derive"] }]
+# Project B uses ratatui
+ratatui = "0.30.0"
+# Both share tokio
+tokio = { version = "1", features = ["full"] }
+```
+
+Each entry is resolved independently, so conflicting requirements don't cause errors. The mirror contains all required versions.
 
 ---
 
 ## Web UI
 
 The web UI is served at the root URL (`http://frostmirror.internal:8080/`). No extra service or port required.
-
-### Pages
 
 | Page | URL | Description |
 |---|---|---|
@@ -473,7 +506,7 @@ The web UI is served at the root URL (`http://frostmirror.internal:8080/`). No e
 | **Packages** | `/packages` | Import history, bundle sizes, GC button |
 | **Client Setup** | `/setup` | Generated shell commands and downloadable config files |
 
-The Dashboard auto-refreshes every 30 seconds. The `failed` count on the dashboard is the primary operational alert -- if it is non-zero, inspect the files in `./incoming/failed/`.
+The Dashboard auto-refreshes every 30 seconds. The `failed` count is the primary operational alert -- if non-zero, inspect `./incoming/failed/`.
 
 ---
 
@@ -486,7 +519,7 @@ All API endpoints are served by the same process as the registry.
 | `GET` | `/api/status` | Mirror health, crate count, last import time |
 | `GET` | `/api/packages` | Import history list |
 | `GET` | `/api/config` | Current frostmirror.toml as JSON |
-| `POST` | `/api/config` | Write new config |
+| `POST` | `/api/config` | Write new config (triggers in-process reload) |
 | `GET` | `/api/deps` | Current depends.toml as JSON |
 | `POST` | `/api/deps` | Write new depends.toml |
 | `GET` | `/api/incoming` | Watcher state, done/failed counts |
@@ -495,47 +528,25 @@ All API endpoints are served by the same process as the registry.
 | `GET` | `/api/setup/rustup-env.sh` | Download shell env script |
 | `GET` | `/api/setup/rustup-env.ps1` | Download PowerShell env script |
 
-### Example: check mirror status with curl
+### Examples
 
 ```bash
-curl -s http://frostmirror.internal:8080/api/status | python3 -m json.tool
-```
+# Check mirror status
+curl -s http://localhost:8080/api/status | python3 -m json.tool
 
-```json
-{
-    "crate_count": 47,
-    "total_size": 12458923,
-    "total_size_human": "11.9 MB",
-    "last_import": "2026-04-02T21:30:00+00:00",
-    "watcher_active": true,
-    "done_count": 2,
-    "failed_count": 0
-}
-```
-
-### Example: update dependencies via API
-
-```bash
-curl -X POST http://frostmirror.internal:8080/api/deps \
+# Update dependencies (supports simple, extended, and array formats)
+curl -X POST http://localhost:8080/api/deps \
   -H "Content-Type: application/json" \
   -d '{
     "dependencies": {
-      "tokio": "1.50.0",
-      "serde": "1.0.210",
-      "reqwest": "0.12.4"
-    },
-    "platforms": {
-      "targets": ["x86_64-unknown-linux-gnu"],
-      "toolchain": "stable"
+      "tokio": {"version": "1", "features": ["full"]},
+      "serde": ["1.0.100", {"version": "1", "features": ["derive"]}],
+      "anyhow": "1"
     }
   }'
-```
 
-### Example: trigger garbage collection
-
-```bash
-curl -X POST http://frostmirror.internal:8080/api/gc
-# {"removed":3,"freed_bytes":1248576}
+# Trigger garbage collection
+curl -X POST http://localhost:8080/api/gc
 ```
 
 ---
@@ -548,21 +559,21 @@ Add to `~/.cargo/config.toml` on each developer machine:
 
 ```toml
 [source.frostmirror]
-registry = "http://frostmirror.internal:8080/index"
+registry = "sparse+http://frostmirror.internal:8080/index/"
 
 [source.crates-io]
 replace-with = "frostmirror"
 ```
 
-Or download the ready-made file from the web UI at `/setup`, or via:
+The `sparse+` prefix is required -- it tells cargo to use the HTTP sparse protocol instead of trying to git-clone the URL.
+
+Or download the ready-made file:
 
 ```bash
 curl http://frostmirror.internal:8080/api/setup/cargo-config > ~/.cargo/config.toml
 ```
 
 ### Rustup
-
-Set environment variables in `.bashrc` (or equivalent):
 
 ```bash
 export RUSTUP_DIST_SERVER=http://frostmirror.internal:8080
@@ -572,11 +583,18 @@ export RUSTUP_UPDATE_ROOT=http://frostmirror.internal:8080/rustup
 Install rustup from the mirror:
 
 ```bash
+# Linux/macOS
 curl http://frostmirror.internal:8080/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
   -o rustup-init
-chmod +x rustup-init
-./rustup-init
+chmod +x rustup-init && ./rustup-init
+
+# Windows (PowerShell)
+Invoke-WebRequest http://frostmirror.internal:8080/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe `
+  -OutFile rustup-init.exe
+.\rustup-init.exe
 ```
+
+Note: Windows targets use `rustup-init.exe`, Linux/macOS targets use `rustup-init`.
 
 ### PowerShell (Windows)
 
@@ -585,13 +603,9 @@ $env:RUSTUP_DIST_SERVER = "http://frostmirror.internal:8080"
 $env:RUSTUP_UPDATE_ROOT = "http://frostmirror.internal:8080/rustup"
 ```
 
-Or download the script: `http://frostmirror.internal:8080/api/setup/rustup-env.ps1`
-
 ---
 
 ## Environment Variables
-
-All settings can be controlled via environment variables, making Docker and CI integration straightforward.
 
 | Variable | Used by | Default | Description |
 |---|---|---|---|
@@ -604,7 +618,6 @@ All settings can be controlled via environment variables, making Docker and CI i
 | `FROSTMIRROR_DL_URL` | fetch | static.crates.io | Override crate download URL |
 | `FROSTMIRROR_DIST_URL` | fetch | static.rust-lang.org | Override rustup dist URL |
 | `FROSTMIRROR_HISTORY` | fetch | `~/.frostmirror/history` | Manifest history directory |
-| `FROSTMIRROR_PKG_DIR` | import | `/pkgs` | Where to read `.pkg` files |
 | `FROSTMIRROR_BASE_URL` | serve | `http://localhost:8080` | Base URL embedded in client configs |
 | `FROSTMIRROR_BIND` | serve | `0.0.0.0:8080` | HTTP bind address |
 | `FROSTMIRROR_MIRROR` | serve | `/mirror` | Mirror data directory |
@@ -615,32 +628,27 @@ All settings can be controlled via environment variables, making Docker and CI i
 
 ## Project Architecture
 
-frostmirror is organized as a Cargo workspace with five crates:
-
 ```
 frostmirror/
 ├── crates/
-│   ├── frostmirror-core/       # Library: dep resolution, bundle format, manifest, diff
-│   ├── frostmirror-fetch/      # Library: sparse index client, crate/rustup downloaders
+│   ├── frostmirror-core/       # Library: bundle format, manifest, diff logic
+│   ├── frostmirror-fetch/      # Library: cargo-based resolver, crate/rustup downloaders
 │   ├── frostmirror-import/     # Library: .pkg extraction, atomic mirror merge, GC
 │   ├── frostmirror-serve/      # Library: HTTP server, sparse registry, web UI, watcher
 │   └── frostmirror/            # Binary: CLI entrypoint
 ├── docker/                     # Dockerfiles and entrypoint
+├── scripts/                    # Build, export, and import Docker images
 ├── tests/integration/          # Docker-based integration tests
 └── depends.toml                # Self-hosted: frostmirror mirrors its own deps
 ```
 
-### Crate responsibilities
-
 | Crate | Role |
 |---|---|
-| `frostmirror-core` | Bundle format (brotli + custom binary archive), manifest with SHA-256 integrity, semver resolver against sparse index, diff logic for incremental updates |
-| `frostmirror-fetch` | Async downloads from crates.io sparse index and rustup dist servers, produces `.pkg` bundles |
+| `frostmirror-core` | Bundle format (brotli + custom binary archive), manifest with SHA-256 integrity, `depends.toml` parser with features/multi-version support |
+| `frostmirror-fetch` | Delegates to `cargo generate-lockfile` for resolution, downloads `.crate` files and index entries, produces `.pkg` bundles |
 | `frostmirror-import` | Decompresses and verifies `.pkg` bundles, atomically merges contents into the mirror store |
-| `frostmirror-serve` | Axum-based HTTP server implementing the Cargo sparse registry protocol, rustup dist serving, REST API, and embedded web UI |
+| `frostmirror-serve` | Axum-based HTTP server implementing the Cargo sparse registry protocol (`nest` + `fallback` routing), rustup dist serving, REST API, embedded web UI, incoming watcher on dedicated thread |
 | `frostmirror` | CLI binary wiring everything together via clap |
-
-`frostmirror-core` is published as a standalone library so other tools can embed the resolution and bundle format logic.
 
 ---
 
@@ -648,8 +656,8 @@ frostmirror/
 
 ### Prerequisites
 
-- Rust 1.77+
-- Docker and Docker Compose (for integration tests)
+- Rust 1.86+ (required for Cargo.lock v4 format)
+- Docker and Docker Compose (for integration tests and production images)
 
 ### Build
 
@@ -669,32 +677,12 @@ cargo test --workspace
 RUST_LOG=debug cargo run -p frostmirror -- fetch --config depends.toml
 ```
 
-### Docker development with hot-reload
-
-```bash
-docker compose -f compose.dev.yml up dev
-```
-
 ### Integration tests
 
-The integration tests spin up real Docker containers -- one online (with a mock registry), one fully air-gapped -- and pass `.pkg` bundles across a shared volume:
-
 ```bash
-# Build the test image
-docker build -t frostmirror:test .
-
-# Run all 6 tests
+./scripts/build.sh
 docker compose -f compose.test.yml run --rm test-runner
-
-# Run a single test
-docker compose -f compose.test.yml run --rm test-runner \
-  cargo test --test integration test_02_incremental
-
-# Keep containers up after failure for inspection
-docker compose -f compose.test.yml up --abort-on-container-exit
 ```
-
-**Test suite:**
 
 | Test | What it validates |
 |---|---|
@@ -709,60 +697,64 @@ docker compose -f compose.test.yml up --abort-on-container-exit
 
 ## Troubleshooting
 
-### "no matching version" during fetch
+### `cargo generate-lockfile` fails during fetch
 
-The resolver could not find a version satisfying your requirement. Check that:
-- The crate name is spelled correctly in `depends.toml`
-- The version exists on crates.io and is not yanked
-- Your version string is valid semver (e.g. `"1.0"`, `">=0.12, <0.13"`, `"=1.50.0"`)
+frostmirror requires `cargo` to be installed on the machine running `fetch`. The fetcher creates temporary Cargo projects and runs `cargo generate-lockfile` to resolve dependencies. If cargo is not in `PATH`, the fetch will fail.
+
+### "no matching package found" on the air-gap
+
+Check that:
+1. The crate and version are in your `depends.toml` (or are transitive deps of something that is)
+2. A `.pkg` containing that crate has been imported
+3. Your `~/.cargo/config.toml` uses the `sparse+` prefix: `registry = "sparse+http://..."`
+
+Without `sparse+`, cargo tries to git-clone the URL instead of using the HTTP sparse protocol, which will always fail.
+
+Run with debug logging on the server to see what cargo is requesting:
+
+```bash
+RUST_LOG=debug frostmirror serve --mirror /data/mirror
+```
+
+### "failed to download" -- crate file returns 404
+
+The index entry exists but the `.crate` file is missing from the mirror. This can happen if:
+- The crate was resolved in a previous `depends.toml` but the `.pkg` containing it was never imported
+- The crate version was unified differently by cargo (e.g. your project resolves `aho-corasick 1.1.4` but the mirror only has `1.1.3`)
+
+Fix: re-run `frostmirror fetch` (full, not incremental) to rebuild the bundle with the current resolution, then re-import.
 
 ### Incremental fetch falls back to full
 
-This happens when no previous manifest is found in the history directory. It is normal on the first run or after clearing `~/.frostmirror/history/`. The warning is informational.
+This happens when no previous manifest is found in the history directory (`~/.frostmirror/history/`). Normal on the first run. The warning is informational.
 
 ### Bundle verification fails on import
 
-The `.pkg` file may be corrupted (truncated transfer, bad disk). The file is moved to `./incoming/failed/`. Re-transfer the original `.pkg` and try again.
-
-To verify a bundle before transporting it:
+The `.pkg` file may be corrupted (truncated transfer, bad disk). It is moved to `./incoming/failed/`. Re-transfer the original and try again.
 
 ```bash
 frostmirror verify 20260402-2130-crates.pkg
 ```
 
-### `cargo build` says "no matching package found"
-
-Make sure:
-1. The crate and version are included in your `depends.toml`
-2. A `.pkg` containing that crate has been imported
-3. Your `~/.cargo/config.toml` points to the correct frostmirror URL
-
-Check what the mirror has:
-
-```bash
-curl http://frostmirror.internal:8080/api/status
-```
-
 ### Web UI shows failed count > 0
 
-Inspect the failed bundles:
-
-```bash
-ls ./incoming/failed/
-```
-
-Common causes: corrupted transfer, incompatible bundle version, disk full. Fix the issue, then re-drop a valid `.pkg`.
+Inspect `./incoming/failed/`. Common causes: corrupted transfer, disk full. Fix the issue, then re-drop a valid `.pkg`.
 
 ### Mirror taking too much disk space
 
-Run garbage collection to remove crates no longer in the current manifest:
-
 ```bash
 frostmirror gc --mirror /data/mirror
+# Or via API:
+curl -X POST http://localhost:8080/api/gc
 ```
 
-Or trigger it from the web UI (Packages page) or API:
+### Windows rustup-init returns 404
 
-```bash
-curl -X POST http://frostmirror.internal:8080/api/gc
+Windows targets use `rustup-init.exe` (not `rustup-init`). Make sure your `depends.toml` lists the Windows target:
+
+```toml
+[platforms]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 ```
+
+frostmirror automatically uses the correct filename per platform.

@@ -43,7 +43,7 @@ RS
                 mkdir -p /usr/local/cargo
                 cat > /usr/local/cargo/config.toml << CONF
 [source.frostmirror]
-registry = "{url}/index"
+registry = "sparse+{url}/index/"
 
 [source.crates-io]
 replace-with = "frostmirror"
