@@ -95,6 +95,9 @@ frostmirror import 20260402-2130-crates.pkg --mirror /mirror
 
 ```toml
 # ~/.cargo/config.toml
+[http]
+check-revoke = false # may be needed if you have a self sign ssl https server
+
 [source.frostmirror]
 registry = "sparse+http://frostmirror.internal:8080/index/"
 
