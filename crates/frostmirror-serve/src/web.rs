@@ -264,7 +264,7 @@ async fn setup_page() -> Html<String> {
             document.getElementById('rustup-snippet').textContent=
                 `curl ${base}/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o rustup-init\nchmod +x rustup-init && ./rustup-init`;
             document.getElementById('cargo-snippet').textContent=
-                `[source.frostmirror]\nregistry = "sparse+${base}/index/"\n\n[source.crates-io]\nreplace-with = "frostmirror"`;
+                `[http]\ncheck-revoke = false # may be needed if you have a self sign ssl https server\n\n[source.frostmirror]\nregistry = "sparse+${base}/index/"\n\n[source.crates-io]\nreplace-with = "frostmirror"`;
         });
         </script>
     "#))
