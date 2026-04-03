@@ -1,8 +1,26 @@
-# frostmirror
+# Frostmirror
+
+<div style="width:15%; margin: auto;">
+
+![Dual Mode](/resources/frostmirror_icon.svg)
+
+</div>
 
 A lightweight, dependency-scoped Rust mirror tool designed for air-gapped environments.
+<div style="width:50%; margin: auto;">
 
+![Dual Mode](/resources/frostmirror_dual_mode.svg)
+
+</div>
 Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), frostmirror only fetches the crates required to build your specific project. It delegates dependency resolution to cargo itself, downloads exactly what is needed, and packages everything into a single timestamped `.pkg` bundle compressed with brotli. Bundles are designed for incremental transfer across an air gap -- only the delta since the last bundle needs to be transported.
+
+<div style="width:50%; margin: auto;">
+
+![Update flow](/resources/frostmirror_airgap_update_flow.svg)
+
+</div>
+This projects was greatly inspired from Panamax and Romt. But crates.io is getting so heavy it’s no more possible to use it. 
+This project was created with Claude code. I publish it to help others people that may have the same problem has me.
 
 ---
 
