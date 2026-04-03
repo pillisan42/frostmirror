@@ -7,6 +7,7 @@
 </div>
 
 A lightweight, dependency-scoped Rust mirror tool designed for air-gapped environments.
+
 <div style="width:50%; margin: auto;">
 
 ![Dual Mode](/resources/frostmirror_dual_mode.svg)
