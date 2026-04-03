@@ -113,12 +113,14 @@ cargo build  # resolves everything from frostmirror
 ### From source
 
 ```bash
-git clone https://github.com/example/frostmirror
+git clone https://github.com/pillisan42/frostmirror
 cd frostmirror
 cargo install --path crates/frostmirror
 ```
 
 ### With cargo
+
+> not available right now (I will figure it out later)
 
 ```bash
 cargo install frostmirror
