@@ -15,6 +15,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/pillisan42/frostmirror"
 keywords = ["local","mirror","airgap","panamax","romt"]
 categories = ["accessibility"]
+readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates
