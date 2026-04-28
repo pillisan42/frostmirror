@@ -228,6 +228,79 @@ impl Fetcher {
             }
         }
 
+        // Download toolchain distribution: channel manifest + all components.
+        let channel = &depends.platforms.toolchain;
+        tracing::info!(
+            "downloading channel manifest for '{}' toolchain",
+            channel
+        );
+        match rustup::download_channel_manifest(
+            &self.client,
+            self.config.dist_url.as_deref(),
+            channel,
+        )
+        .await
+        {
+            Ok(manifest_toml) => {
+                // Store the channel manifest itself
+                let manifest_path = format!("channel-rust-{}.toml", channel);
+                let sha = bundle::sha256_hex(manifest_toml.as_bytes());
+                manifest.add_dist(
+                    manifest_path.clone(),
+                    sha,
+                    manifest_toml.len() as u64,
+                );
+                builder.add_dist_file(&manifest_path, manifest_toml.as_bytes().to_vec());
+
+                // Parse manifest and download all components for our targets
+                match rustup::parse_channel_manifest(
+                    &manifest_toml,
+                    &depends.platforms.targets,
+                    self.config.dist_url.as_deref(),
+                ) {
+                    Ok(components) => {
+                        tracing::info!(
+                            "downloading {} toolchain component(s) for {} target(s)",
+                            components.len(),
+                            depends.platforms.targets.len()
+                        );
+                        for (i, comp) in components.iter().enumerate() {
+                            tracing::info!(
+                                "[{}/{}] downloading {}",
+                                i + 1,
+                                components.len(),
+                                comp.dist_path
+                            );
+                            match rustup::download_component(&self.client, &comp.url).await {
+                                Ok(data) => {
+                                    let sha = bundle::sha256_hex(&data);
+                                    manifest.add_dist(
+                                        comp.dist_path.clone(),
+                                        sha,
+                                        data.len() as u64,
+                                    );
+                                    builder.add_dist_file(&comp.dist_path, data);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "failed to download component {}: {}",
+                                        comp.dist_path,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to parse channel manifest: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to download channel manifest: {}", e);
+            }
+        }
+
         // Generate cargo config.toml for clients
         let base_url = std::env::var("FROSTMIRROR_BASE_URL")
             .unwrap_or_else(|_| "http://frostmirror.internal:8080".to_string());

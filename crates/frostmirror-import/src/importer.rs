@@ -78,6 +78,14 @@ impl Importer {
                         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
                     }
                 }
+                SectionKind::Dist => {
+                    // dist/<path> (channel manifests + component archives)
+                    let dest = temp_dir.path().join(&section.path);
+                    if let Some(parent) = dest.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&dest, &section.data)?;
+                }
                 SectionKind::Config => {
                     let dest = temp_dir.path().join("config.toml");
                     std::fs::write(&dest, &section.data)?;

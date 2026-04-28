@@ -23,6 +23,9 @@ pub struct Manifest {
     /// Rustup artifacts included.
     #[serde(default)]
     pub rustup: Vec<RustupEntry>,
+    /// Toolchain distribution files (channel manifests + component archives).
+    #[serde(default)]
+    pub dist: Vec<DistEntry>,
     /// SHA-256 of the entire manifest (computed over all other fields).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_hash: Option<String>,
@@ -53,6 +56,16 @@ pub struct RustupEntry {
     pub size: u64,
 }
 
+/// A toolchain distribution file (channel manifest or component archive).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistEntry {
+    /// Relative path under `dist/`, e.g. `channel-rust-stable.toml`
+    /// or `2024-01-09/rustc-1.75.0-x86_64-unknown-linux-gnu.tar.xz`.
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
 impl Manifest {
     pub fn new(
         bundle_type: BundleType,
@@ -68,6 +81,7 @@ impl Manifest {
             toolchain,
             crates: BTreeMap::new(),
             rustup: Vec::new(),
+            dist: Vec::new(),
             manifest_hash: None,
         }
     }
@@ -92,6 +106,10 @@ impl Manifest {
             sha256,
             size,
         });
+    }
+
+    pub fn add_dist(&mut self, path: String, sha256: String, size: u64) {
+        self.dist.push(DistEntry { path, sha256, size });
     }
 
     /// Get all (name, version) pairs in this manifest.

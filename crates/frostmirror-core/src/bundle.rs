@@ -13,6 +13,8 @@ pub enum SectionKind {
     Crate,
     Index,
     Rustup,
+    /// Toolchain distribution files (channel manifests + component archives).
+    Dist,
     Config,
 }
 
@@ -23,6 +25,7 @@ impl SectionKind {
             SectionKind::Crate => "crates/",
             SectionKind::Index => "index/",
             SectionKind::Rustup => "rustup/",
+            SectionKind::Dist => "dist/",
             SectionKind::Config => "config.toml",
         }
     }
@@ -36,6 +39,8 @@ impl SectionKind {
             SectionKind::Index
         } else if path.starts_with("rustup/") {
             SectionKind::Rustup
+        } else if path.starts_with("dist/") {
+            SectionKind::Dist
         } else if path == "config.toml" {
             SectionKind::Config
         } else {
@@ -97,6 +102,11 @@ impl BundleBuilder {
     pub fn add_rustup_file(&mut self, target: &str, filename: &str, data: Vec<u8>) {
         let path = format!("rustup/dist/{}/{}", target, filename);
         self.add_section(SectionKind::Rustup, path, data);
+    }
+
+    pub fn add_dist_file(&mut self, relative_path: &str, data: Vec<u8>) {
+        let path = format!("dist/{}", relative_path);
+        self.add_section(SectionKind::Dist, path, data);
     }
 
     pub fn add_config(&mut self, config_toml: &str) {

@@ -115,6 +115,60 @@ impl DepSpec {
     }
 }
 
+/// Target triples and Rust toolchain channel to mirror.
+///
+/// `targets` and `toolchain` are forwarded verbatim to URLs under
+/// `https://static.rust-lang.org` (overridable via `FROSTMIRROR_DIST_URL`):
+///
+/// - `rustup/dist/<target>/rustup-init[.exe]` — host installer per target
+/// - `dist/channel-rust-<toolchain>.toml` — channel manifest with all components
+///
+/// # `toolchain`
+///
+/// Any string that resolves to a published `channel-rust-<value>.toml`:
+///
+/// - `stable`, `beta`, `nightly` — rolling channels
+/// - `1.86.0`, `1.75.0`, ... — a pinned Rust release (`MAJOR.MINOR.PATCH`)
+///
+/// Dated nightlies (`nightly-2026-04-25`) are *not* supported by this URL
+/// scheme — the upstream serves them at `dist/<date>/channel-rust-nightly.toml`,
+/// which frostmirror does not currently address. Pin a stable version instead.
+///
+/// # `targets`
+///
+/// Rust target triples. Full taxonomy:
+/// <https://doc.rust-lang.org/nightly/rustc/platform-support.html>.
+///
+/// The targets that ship a complete host toolchain (rustup-init + rustc +
+/// cargo + rust-std) — and therefore work end-to-end through frostmirror's
+/// air-gap workflow — are the "with Host Tools" rows of Tier 1 and Tier 2:
+///
+/// **Tier 1 (host tools):**
+/// `aarch64-apple-darwin`, `aarch64-pc-windows-msvc`,
+/// `aarch64-unknown-linux-gnu`, `i686-pc-windows-msvc`,
+/// `i686-unknown-linux-gnu`, `x86_64-pc-windows-gnu`,
+/// `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`.
+///
+/// **Tier 2 (host tools):**
+/// `aarch64-pc-windows-gnullvm`, `aarch64-unknown-linux-musl`,
+/// `aarch64-unknown-linux-ohos`, `arm-unknown-linux-gnueabi`,
+/// `arm-unknown-linux-gnueabihf`, `armv7-unknown-linux-gnueabihf`,
+/// `armv7-unknown-linux-ohos`, `i686-pc-windows-gnu`,
+/// `loongarch64-unknown-linux-gnu`, `loongarch64-unknown-linux-musl`,
+/// `powerpc-unknown-linux-gnu`, `powerpc64-unknown-linux-gnu`,
+/// `powerpc64-unknown-linux-musl`, `powerpc64le-unknown-linux-gnu`,
+/// `powerpc64le-unknown-linux-musl`, `riscv64gc-unknown-linux-gnu`,
+/// `s390x-unknown-linux-gnu`, `sparcv9-sun-solaris`,
+/// `x86_64-apple-darwin`, `x86_64-pc-solaris`,
+/// `x86_64-pc-windows-gnullvm`, `x86_64-unknown-freebsd`,
+/// `x86_64-unknown-illumos`, `x86_64-unknown-linux-musl`,
+/// `x86_64-unknown-linux-ohos`, `x86_64-unknown-netbsd`.
+///
+/// Cross-compile-only targets (Tier 2 without host tools, Tier 3 — e.g.
+/// `wasm32-unknown-unknown`, `aarch64-apple-ios`, `thumbv7em-none-eabihf`)
+/// ship `rust-std` only and have no `rustup-init` binary; listing one here
+/// will fail the rustup-init fetch. Install rustup for the host triple and
+/// then `rustup target add <triple>` on the offline machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Platforms {
     #[serde(default = "default_targets")]

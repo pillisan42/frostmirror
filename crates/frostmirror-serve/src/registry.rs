@@ -25,9 +25,15 @@ pub fn routes(state: SharedState) -> Router {
         .fallback(crates_fallback)
         .with_state(state.clone());
 
+    // Sub-router for /dist — serves channel manifests and toolchain component archives.
+    let dist_router = Router::new()
+        .fallback(dist_fallback)
+        .with_state(state.clone());
+
     Router::new()
         .nest("/index", index_router)
         .nest("/crates", crates_router)
+        .nest("/dist", dist_router)
         // Rustup dist
         .route("/rustup/dist/{target}/{filename}", get(rustup_dist))
         .with_state(state)
@@ -83,6 +89,33 @@ async fn crates_fallback(State(state): State<SharedState>, req: Request) -> Resp
     // Serve the file directly from mirror/crates/{relative}
     let file_path = state.mirror_dir.join("crates").join(relative);
     serve_file(&file_path, "application/octet-stream").await
+}
+
+/// Fallback handler for toolchain distribution files.
+///
+/// Serves channel manifests (e.g. `channel-rust-stable.toml`) and component
+/// archives (e.g. `2024-01-09/rustc-1.75.0-x86_64-unknown-linux-gnu.tar.xz`)
+/// from the `mirror/dist/` directory.
+async fn dist_fallback(State(state): State<SharedState>, req: Request) -> Response {
+    let uri_path = req.uri().path();
+    let relative = uri_path.strip_prefix('/').unwrap_or(uri_path);
+
+    if relative.is_empty() || relative.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    }
+
+    let file_path = state.mirror_dir.join("dist").join(relative);
+
+    // Determine content type from extension
+    let content_type = if relative.ends_with(".toml") {
+        "text/plain"
+    } else if relative.ends_with(".sha256") {
+        "text/plain"
+    } else {
+        "application/octet-stream"
+    };
+
+    serve_file(&file_path, content_type).await
 }
 
 async fn rustup_dist(

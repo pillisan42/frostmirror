@@ -157,14 +157,62 @@ async fn config_page() -> Html<String> {
         <form id="config-form" onsubmit="saveConfig(event)">
             <label>Base URL<input id="cfg-base-url" type="text"></label>
             <label>Bind Address<input id="cfg-bind" type="text"></label>
-            <label>Toolchain<input id="cfg-toolchain" type="text"></label>
+            <label>Toolchain<input id="cfg-toolchain" type="text" list="toolchain-options" placeholder="stable | beta | nightly | 1.86.0"></label>
+            <datalist id="toolchain-options">
+                <option value="stable">
+                <option value="beta">
+                <option value="nightly">
+                <option value="1.86.0">
+                <option value="1.85.0">
+                <option value="1.84.0">
+            </datalist>
             <fieldset>
                 <legend>Target Platforms</legend>
-                <label><input type="checkbox" value="x86_64-unknown-linux-gnu" class="target-cb"> x86_64-unknown-linux-gnu</label>
-                <label><input type="checkbox" value="aarch64-unknown-linux-gnu" class="target-cb"> aarch64-unknown-linux-gnu</label>
-                <label><input type="checkbox" value="x86_64-pc-windows-msvc" class="target-cb"> x86_64-pc-windows-msvc</label>
-                <label><input type="checkbox" value="x86_64-apple-darwin" class="target-cb"> x86_64-apple-darwin</label>
-                <label><input type="checkbox" value="aarch64-apple-darwin" class="target-cb"> aarch64-apple-darwin</label>
+                <p class="hint">Tier 1 &amp; Tier 2 targets with host tools (full rustup toolchain available). Cross-compile-only targets must be added via <code>rustup target add</code> on the offline machine.</p>
+                <details open>
+                    <summary>Tier 1 (host tools)</summary>
+                    <label><input type="checkbox" value="x86_64-unknown-linux-gnu" class="target-cb"> x86_64-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="aarch64-unknown-linux-gnu" class="target-cb"> aarch64-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="i686-unknown-linux-gnu" class="target-cb"> i686-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="x86_64-pc-windows-msvc" class="target-cb"> x86_64-pc-windows-msvc</label>
+                    <label><input type="checkbox" value="x86_64-pc-windows-gnu" class="target-cb"> x86_64-pc-windows-gnu</label>
+                    <label><input type="checkbox" value="i686-pc-windows-msvc" class="target-cb"> i686-pc-windows-msvc</label>
+                    <label><input type="checkbox" value="aarch64-pc-windows-msvc" class="target-cb"> aarch64-pc-windows-msvc</label>
+                    <label><input type="checkbox" value="x86_64-apple-darwin" class="target-cb"> x86_64-apple-darwin</label>
+                    <label><input type="checkbox" value="aarch64-apple-darwin" class="target-cb"> aarch64-apple-darwin</label>
+                </details>
+                <details>
+                    <summary>Tier 2 — Linux (host tools)</summary>
+                    <label><input type="checkbox" value="x86_64-unknown-linux-musl" class="target-cb"> x86_64-unknown-linux-musl</label>
+                    <label><input type="checkbox" value="aarch64-unknown-linux-musl" class="target-cb"> aarch64-unknown-linux-musl</label>
+                    <label><input type="checkbox" value="aarch64-unknown-linux-ohos" class="target-cb"> aarch64-unknown-linux-ohos</label>
+                    <label><input type="checkbox" value="x86_64-unknown-linux-ohos" class="target-cb"> x86_64-unknown-linux-ohos</label>
+                    <label><input type="checkbox" value="arm-unknown-linux-gnueabi" class="target-cb"> arm-unknown-linux-gnueabi</label>
+                    <label><input type="checkbox" value="arm-unknown-linux-gnueabihf" class="target-cb"> arm-unknown-linux-gnueabihf</label>
+                    <label><input type="checkbox" value="armv7-unknown-linux-gnueabihf" class="target-cb"> armv7-unknown-linux-gnueabihf</label>
+                    <label><input type="checkbox" value="armv7-unknown-linux-ohos" class="target-cb"> armv7-unknown-linux-ohos</label>
+                    <label><input type="checkbox" value="loongarch64-unknown-linux-gnu" class="target-cb"> loongarch64-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="loongarch64-unknown-linux-musl" class="target-cb"> loongarch64-unknown-linux-musl</label>
+                    <label><input type="checkbox" value="powerpc-unknown-linux-gnu" class="target-cb"> powerpc-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="powerpc64-unknown-linux-gnu" class="target-cb"> powerpc64-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="powerpc64-unknown-linux-musl" class="target-cb"> powerpc64-unknown-linux-musl</label>
+                    <label><input type="checkbox" value="powerpc64le-unknown-linux-gnu" class="target-cb"> powerpc64le-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="powerpc64le-unknown-linux-musl" class="target-cb"> powerpc64le-unknown-linux-musl</label>
+                    <label><input type="checkbox" value="riscv64gc-unknown-linux-gnu" class="target-cb"> riscv64gc-unknown-linux-gnu</label>
+                    <label><input type="checkbox" value="s390x-unknown-linux-gnu" class="target-cb"> s390x-unknown-linux-gnu</label>
+                </details>
+                <details>
+                    <summary>Tier 2 — Windows / BSD / Solaris (host tools)</summary>
+                    <label><input type="checkbox" value="i686-pc-windows-gnu" class="target-cb"> i686-pc-windows-gnu</label>
+                    <label><input type="checkbox" value="aarch64-pc-windows-gnullvm" class="target-cb"> aarch64-pc-windows-gnullvm</label>
+                    <label><input type="checkbox" value="x86_64-pc-windows-gnullvm" class="target-cb"> x86_64-pc-windows-gnullvm</label>
+                    <label><input type="checkbox" value="x86_64-unknown-freebsd" class="target-cb"> x86_64-unknown-freebsd</label>
+                    <label><input type="checkbox" value="x86_64-unknown-netbsd" class="target-cb"> x86_64-unknown-netbsd</label>
+                    <label><input type="checkbox" value="x86_64-unknown-illumos" class="target-cb"> x86_64-unknown-illumos</label>
+                    <label><input type="checkbox" value="x86_64-pc-solaris" class="target-cb"> x86_64-pc-solaris</label>
+                    <label><input type="checkbox" value="sparcv9-sun-solaris" class="target-cb"> sparcv9-sun-solaris</label>
+                </details>
+                <p class="hint"><a href="https://doc.rust-lang.org/nightly/rustc/platform-support.html" target="_blank" rel="noopener">Full target list (Tier 1, 2, 3) at rust-lang docs &rarr;</a></p>
             </fieldset>
             <fieldset>
                 <legend>Behavior</legend>

@@ -166,6 +166,69 @@ toolchain = "stable"
 
 **Multiple versions** of the same crate are supported via the array syntax. Each version is resolved independently so conflicting requirements across projects don't cause errors.
 
+### Supported targets and toolchains
+
+The `[platforms]` section accepts any value the upstream Rust dist server publishes at `https://static.rust-lang.org`. frostmirror downloads `rustup-init` and the channel components for each listed target.
+
+**`toolchain`** — pick one channel string. All map to `dist/channel-rust-<value>.toml`:
+
+| Value | Resolves to |
+|---|---|
+| `stable` | current stable release |
+| `beta` | current beta |
+| `nightly` | current nightly |
+| `1.86.0`, `1.75.0`, ... | a pinned Rust version (any released `MAJOR.MINOR.PATCH`) |
+
+Dated nightlies (`nightly-2026-04-25`) are not supported by the URL scheme — pin a stable version instead.
+
+**`targets`** — list one or more Rust target triples. The full taxonomy lives at <https://doc.rust-lang.org/nightly/rustc/platform-support.html>. The values that ship pre-built `rustup-init` plus a complete host toolchain (and therefore work end-to-end through the air gap) are:
+
+*Tier 1 — host toolchain available, fully supported:*
+
+| Triple | Platform |
+|---|---|
+| `aarch64-apple-darwin` | ARM64 macOS (11.0+) |
+| `aarch64-pc-windows-msvc` | ARM64 Windows MSVC |
+| `aarch64-unknown-linux-gnu` | ARM64 Linux (glibc 2.17+) |
+| `i686-pc-windows-msvc` | 32-bit Windows MSVC |
+| `i686-unknown-linux-gnu` | 32-bit Linux |
+| `x86_64-pc-windows-gnu` | 64-bit Windows MinGW |
+| `x86_64-pc-windows-msvc` | 64-bit Windows MSVC |
+| `x86_64-unknown-linux-gnu` | 64-bit Linux (glibc 2.17+) |
+
+*Tier 2 — host toolchain available, guaranteed to build:*
+
+| Triple | Platform |
+|---|---|
+| `aarch64-pc-windows-gnullvm` | ARM64 MinGW (LLVM ABI) |
+| `aarch64-unknown-linux-musl` | ARM64 Linux musl |
+| `aarch64-unknown-linux-ohos` | ARM64 OpenHarmony |
+| `arm-unknown-linux-gnueabi` | Armv6 Linux |
+| `arm-unknown-linux-gnueabihf` | Armv6 Linux hardfloat |
+| `armv7-unknown-linux-gnueabihf` | Armv7-A Linux hardfloat |
+| `armv7-unknown-linux-ohos` | Armv7-A OpenHarmony |
+| `i686-pc-windows-gnu` | 32-bit Windows MinGW |
+| `loongarch64-unknown-linux-gnu` | LoongArch64 Linux glibc |
+| `loongarch64-unknown-linux-musl` | LoongArch64 Linux musl |
+| `powerpc-unknown-linux-gnu` | PowerPC Linux |
+| `powerpc64-unknown-linux-gnu` | PPC64 Linux |
+| `powerpc64-unknown-linux-musl` | PPC64 Linux musl |
+| `powerpc64le-unknown-linux-gnu` | PPC64LE Linux |
+| `powerpc64le-unknown-linux-musl` | PPC64LE Linux musl |
+| `riscv64gc-unknown-linux-gnu` | RISC-V Linux |
+| `s390x-unknown-linux-gnu` | S390x Linux |
+| `sparcv9-sun-solaris` | SPARC V9 Solaris 11.4 |
+| `x86_64-apple-darwin` | 64-bit macOS (10.12+) |
+| `x86_64-pc-solaris` | 64-bit x86 Solaris 11.4 |
+| `x86_64-pc-windows-gnullvm` | 64-bit Windows MinGW (LLVM ABI) |
+| `x86_64-unknown-freebsd` | 64-bit FreeBSD |
+| `x86_64-unknown-illumos` | 64-bit illumos |
+| `x86_64-unknown-linux-musl` | 64-bit Linux musl |
+| `x86_64-unknown-linux-ohos` | 64-bit OpenHarmony |
+| `x86_64-unknown-netbsd` | 64-bit NetBSD |
+
+Cross-compile-only targets (Tier 2 without host tools, Tier 3 — e.g. `wasm32-unknown-unknown`, `aarch64-apple-ios`, `thumbv7em-none-eabihf`) ship `rust-std` only, not `rustup-init`. Listing one in `targets` will fail the rustup-init download step. Install rustup for your host triple and add the cross-compile target on the offline machine via `rustup target add <triple>` once the toolchain is installed.
+
 ### Dependency resolution
 
 frostmirror delegates resolution entirely to **cargo itself**. For each dependency in `depends.toml`, frostmirror:
