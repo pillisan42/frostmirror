@@ -18,10 +18,10 @@ categories = ["accessibility"]
 
 [workspace.dependencies]
 # Internal crates
-frostmirror-core = { path = "crates/frostmirror-core" }
-frostmirror-fetch = { path = "crates/frostmirror-fetch" }
-frostmirror-import = { path = "crates/frostmirror-import" }
-frostmirror-serve = { path = "crates/frostmirror-serve" }
+frostmirror-core = { path = "crates/frostmirror-core", version = "1.0.0" }
+frostmirror-fetch = { path = "crates/frostmirror-fetch", version = "1.0.0" }
+frostmirror-import = { path = "crates/frostmirror-import", version = "1.0.0" }
+frostmirror-serve = { path = "crates/frostmirror-serve", version = "1.0.0" }
 
 # Async runtime
 tokio = { version = "1.52.1", features = ["full"] }
