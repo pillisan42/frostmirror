@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "frostmirror"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "frostmirror-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "brotli",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "frostmirror-fetch"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "frostmirror-import"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "frostmirror-serve"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",

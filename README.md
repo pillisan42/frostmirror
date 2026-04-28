@@ -129,8 +129,6 @@ cargo install --path crates/frostmirror
 
 ### With cargo
 
-> not available right now (I will figure it out later)
-
 ```bash
 cargo install frostmirror
 ```
