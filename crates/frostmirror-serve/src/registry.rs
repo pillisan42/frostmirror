@@ -35,7 +35,7 @@ pub fn routes(state: SharedState) -> Router {
         .nest("/crates", crates_router)
         .nest("/dist", dist_router)
         // Rustup dist
-        .route("/rustup/dist/{target}/{filename}", get(rustup_dist))
+        .route("/rustup/dist/:target/:filename", get(rustup_dist))
         .with_state(state)
 }
 

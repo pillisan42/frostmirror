@@ -38,3 +38,11 @@ button.primary:hover { opacity: 0.9; }
 pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; margin: 0.5rem 0; white-space: pre-wrap; }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
 @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+.os-tabs { display: flex; gap: 0.25rem; margin: 0.5rem 0 1rem; }
+.os-tab { background: var(--surface); color: var(--text-muted); border: 1px solid var(--border); padding: 0.4rem 0.9rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
+.os-tab:hover { color: var(--text); }
+.os-tab.active { color: var(--text); background: var(--border); border-color: var(--accent); }
+.os-note { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; padding: 0.75rem 1rem; margin: 0.5rem 0 1rem; font-size: 0.9rem; color: var(--text-muted); }
+.os-note strong { color: var(--text); display: block; margin-bottom: 0.25rem; }
+.os-note code { background: var(--bg); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.85rem; }
+.os-note a { color: var(--accent); }

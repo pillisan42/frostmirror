@@ -56,6 +56,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
 serde = { version = "1", features = ["derive"] }
 axum = "0.7"
 
+[dependencies.2]
+tower = "0.4"
+axum = "0.6"
+
 [platforms]
 targets = ["x86_64-unknown-linux-gnu"]
 toolchain = "stable"
@@ -113,7 +117,7 @@ cargo build  # resolves everything from frostmirror
 ### From source
 
 ```bash
-git clone https://github.com/example/frostmirror
+git clone https://github.com/pillisan42/frostmirror.git
 cd frostmirror
 cargo install --path crates/frostmirror
 ```

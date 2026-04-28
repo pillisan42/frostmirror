@@ -21,6 +21,30 @@ use std::path::Path;
 /// # Multiple versions of the same crate — use an array
 /// serde = ["1.0.0", { version = "1.0.210", features = ["derive"] }]
 /// ```
+///
+/// # Variant sub-tables
+///
+/// TOML rejects duplicate keys inside a single table, so listing the same
+/// crate twice under `[dependencies]` is a parse error. To pin two versions
+/// of the same crate without packing them into an inline array, declare a
+/// variant sub-table: any sub-table of `[dependencies]` that does **not**
+/// have a `version` field is treated as an additional dependency group and
+/// merged into the main set at parse time.
+///
+/// ```toml
+/// [dependencies]
+/// tokio = { version = "1", features = ["rt-multi-thread"] }
+/// axum = "0.7"
+///
+/// # Variant — name is arbitrary ("2", "legacy", "v0.6", ...)
+/// [dependencies.2]
+/// tower = "0.4"
+/// axum = "0.6"   # second axum version, mirrored alongside 0.7
+/// ```
+///
+/// Variant names are labels only; specs from every variant are flattened
+/// into `dependencies`, and same-name collisions accumulate as multi-version
+/// entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependsToml {
     pub dependencies: BTreeMap<String, DepEntry>,
@@ -194,6 +218,58 @@ fn default_toolchain() -> String {
     "stable".to_string()
 }
 
+/// Merge `[dependencies.<name>]` variant sub-tables into the top-level
+/// `[dependencies]` map. A sub-table is a "variant" iff it lacks a `version`
+/// key — that disambiguates it from an extended dep spec like
+/// `[dependencies.tokio]` (which always has `version = "..."`). Same-name
+/// crates appearing in multiple groups are folded into a TOML array so the
+/// downstream `DepEntry::Multiple` path picks them up.
+fn flatten_dep_variants(value: &mut toml::Value) {
+    let Some(deps) = value
+        .as_table_mut()
+        .and_then(|t| t.get_mut("dependencies"))
+        .and_then(|v| v.as_table_mut())
+    else {
+        return;
+    };
+
+    let variant_keys: Vec<String> = deps
+        .iter()
+        .filter_map(|(k, v)| match v {
+            toml::Value::Table(t) if !t.contains_key("version") => Some(k.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for key in variant_keys {
+        let Some(toml::Value::Table(variant)) = deps.remove(&key) else {
+            continue;
+        };
+        for (crate_name, spec) in variant {
+            merge_dep(deps, crate_name, spec);
+        }
+    }
+}
+
+fn merge_dep(deps: &mut toml::value::Table, name: String, new: toml::Value) {
+    match deps.remove(&name) {
+        None => {
+            deps.insert(name, new);
+        }
+        Some(existing) => {
+            let mut combined: Vec<toml::Value> = match existing {
+                toml::Value::Array(a) => a,
+                other => vec![other],
+            };
+            match new {
+                toml::Value::Array(a) => combined.extend(a),
+                other => combined.push(other),
+            }
+            deps.insert(name, toml::Value::Array(combined));
+        }
+    }
+}
+
 impl DependsToml {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
@@ -202,7 +278,12 @@ impl DependsToml {
     }
 
     pub fn parse(content: &str) -> Result<Self> {
-        toml::from_str(content).context("failed to parse depends.toml")
+        let mut value: toml::Value =
+            toml::from_str(content).context("failed to parse depends.toml")?;
+        flatten_dep_variants(&mut value);
+        value
+            .try_into()
+            .context("failed to interpret depends.toml")
     }
 
     pub fn to_toml_string(&self) -> Result<String> {
@@ -277,6 +358,70 @@ serde = ["1.0.0", { version = "1.0.210", features = ["derive"] }]
         assert_eq!(flat.len(), 3);
 
         let serde_specs: Vec<_> = flat.iter().filter(|(n, _)| n == "serde").collect();
+        assert_eq!(serde_specs.len(), 2);
+        assert_eq!(serde_specs[0].1.version(), "1.0.0");
+        assert_eq!(serde_specs[1].1.version(), "1.0.210");
+        assert_eq!(serde_specs[1].1.features(), &["derive"]);
+    }
+
+    #[test]
+    fn test_parse_variant_subtable() {
+        let input = r#"
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+serde = { version = "1", features = ["derive"] }
+axum = "0.7"
+
+[dependencies.2]
+tower = "0.4"
+axum = "0.6"
+
+[platforms]
+targets = ["x86_64-unknown-linux-gnu"]
+toolchain = "stable"
+"#;
+        let depends = DependsToml::parse(input).unwrap();
+
+        // 4 distinct crate names: tokio, serde, axum, tower (variant key "2"
+        // is consumed during flattening, not preserved as a crate)
+        assert_eq!(depends.dependencies.len(), 4);
+        assert!(!depends.dependencies.contains_key("2"));
+
+        let flat = depends.flat_deps();
+        // tokio + serde + tower + axum*2 = 5 specs total
+        assert_eq!(flat.len(), 5);
+
+        let axum_versions: Vec<&str> = flat
+            .iter()
+            .filter(|(n, _)| n == "axum")
+            .map(|(_, s)| s.version())
+            .collect();
+        assert_eq!(axum_versions, vec!["0.7", "0.6"]);
+
+        let tower_spec = &flat.iter().find(|(n, _)| n == "tower").unwrap().1;
+        assert_eq!(tower_spec.version(), "0.4");
+    }
+
+    #[test]
+    fn test_parse_multiple_variants_merge() {
+        // Several variants under arbitrary names should all be flattened in.
+        let input = r#"
+[dependencies]
+anyhow = "1"
+
+[dependencies.legacy]
+serde = "1.0.0"
+
+[dependencies.modern]
+serde = { version = "1.0.210", features = ["derive"] }
+"#;
+        let depends = DependsToml::parse(input).unwrap();
+        assert_eq!(depends.dependencies.len(), 2);
+        let serde_specs: Vec<_> = depends
+            .flat_deps()
+            .into_iter()
+            .filter(|(n, _)| n == "serde")
+            .collect();
         assert_eq!(serde_specs.len(), 2);
         assert_eq!(serde_specs[0].1.version(), "1.0.0");
         assert_eq!(serde_specs[1].1.version(), "1.0.210");

@@ -290,11 +290,24 @@ async fn setup_page() -> Html<String> {
         <h1>Client Setup</h1>
         <p>Configure client machines to use this frostmirror registry.</p>
 
+        <div class="os-tabs" role="tablist">
+            <button class="os-tab" data-os="linux" type="button">Linux</button>
+            <button class="os-tab" data-os="macos" type="button">macOS</button>
+            <button class="os-tab" data-os="windows" type="button">Windows</button>
+        </div>
+
         <h2>1. Environment Variables</h2>
         <pre id="env-snippet"></pre>
 
         <h2>2. Install Rustup</h2>
         <pre id="rustup-snippet"></pre>
+        <div class="os-note" id="msvc-note" hidden>
+            <strong>Windows requires the MSVC toolchain.</strong>
+            The <code>x86_64-pc-windows-msvc</code> target needs the Microsoft C++ build tools
+            (linker + Windows SDK) installed separately — frostmirror does not ship them.
+            Install <a href="https://visualstudio.microsoft.com/visual-cpp-build-tools/" target="_blank" rel="noopener">Build Tools for Visual Studio</a>
+            (select the <em>Desktop development with C++</em> workload) before running <code>cargo build</code>.
+        </div>
 
         <h2>3. Configure Cargo</h2>
         <pre id="cargo-snippet"></pre>
@@ -305,14 +318,42 @@ async fn setup_page() -> Html<String> {
         <a class="btn" href="/api/setup/rustup-env.ps1">rustup-env.ps1</a>
 
         <script>
+        function detectOs(){
+            const p=(navigator.userAgentData&&navigator.userAgentData.platform)||navigator.platform||navigator.userAgent||'';
+            const s=p.toLowerCase();
+            if(s.includes('win'))return 'windows';
+            if(s.includes('mac')||s.includes('darwin'))return 'macos';
+            return 'linux';
+        }
+        function snippets(base,os){
+            const cargo=`[source.frostmirror]\nregistry = "sparse+${base}/index/"\n\n[source.crates-io]\nreplace-with = "frostmirror"`;
+            if(os==='windows'){
+                return {
+                    env:`$env:RUSTUP_DIST_SERVER = "${base}"\n$env:RUSTUP_UPDATE_ROOT = "${base}/rustup"`,
+                    rustup:`Invoke-WebRequest "${base}/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe" -OutFile rustup-init.exe\n.\\rustup-init.exe`,
+                    cargo,
+                };
+            }
+            const triple=os==='macos'?'x86_64-apple-darwin':'x86_64-unknown-linux-gnu';
+            return {
+                env:`export RUSTUP_DIST_SERVER=${base}\nexport RUSTUP_UPDATE_ROOT=${base}/rustup`,
+                rustup:`curl ${base}/rustup/dist/${triple}/rustup-init -o rustup-init\nchmod +x rustup-init && ./rustup-init`,
+                cargo,
+            };
+        }
         fetch('/api/config').then(r=>r.json()).then(c=>{
             const base=c.base_url||location.origin;
-            document.getElementById('env-snippet').textContent=
-                `export RUSTUP_DIST_SERVER=${base}\nexport RUSTUP_UPDATE_ROOT=${base}/rustup`;
-            document.getElementById('rustup-snippet').textContent=
-                `curl ${base}/rustup/dist/x86_64-unknown-linux-gnu/rustup-init -o rustup-init\nchmod +x rustup-init && ./rustup-init`;
-            document.getElementById('cargo-snippet').textContent=
-                `[source.frostmirror]\nregistry = "sparse+${base}/index/"\n\n[source.crates-io]\nreplace-with = "frostmirror"`;
+            const tabs=document.querySelectorAll('.os-tab');
+            function render(os){
+                const s=snippets(base,os);
+                document.getElementById('env-snippet').textContent=s.env;
+                document.getElementById('rustup-snippet').textContent=s.rustup;
+                document.getElementById('cargo-snippet').textContent=s.cargo;
+                document.getElementById('msvc-note').hidden=os!=='windows';
+                tabs.forEach(t=>t.classList.toggle('active',t.dataset.os===os));
+            }
+            tabs.forEach(t=>t.addEventListener('click',()=>render(t.dataset.os)));
+            render(detectOs());
         });
         </script>
     "#))
