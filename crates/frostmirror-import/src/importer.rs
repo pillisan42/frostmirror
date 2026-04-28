@@ -1,15 +1,29 @@
 use anyhow::{Context, Result};
 use frostmirror_core::bundle::{BundleReader, SectionKind};
+use frostmirror_core::manifest::Manifest;
 use std::path::{Path, PathBuf};
 
 /// Handles importing `.pkg` bundles into the local mirror store.
 pub struct Importer {
     mirror_dir: PathBuf,
+    config_dir: Option<PathBuf>,
 }
 
 impl Importer {
     pub fn new(mirror_dir: PathBuf) -> Self {
-        Self { mirror_dir }
+        Self {
+            mirror_dir,
+            config_dir: None,
+        }
+    }
+
+    /// Route Config sections in imported bundles to this directory. When unset
+    /// (default), Config sections from a snapshot bundle are skipped — this
+    /// preserves existing offline behavior where fetch-produced bundles never
+    /// carry config files.
+    pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
+        self.config_dir = Some(config_dir);
+        self
     }
 
     pub fn mirror_dir(&self) -> &Path {
@@ -87,7 +101,30 @@ impl Importer {
                     std::fs::write(&dest, &section.data)?;
                 }
                 SectionKind::Config => {
-                    let dest = temp_dir.path().join("config.toml");
+                    // Config sections live outside the mirror tree, so we
+                    // bypass the temp/atomic-merge dance and write directly to
+                    // the configured config dir. If no config_dir is set, skip
+                    // — this keeps the legacy behavior for fetch-produced
+                    // bundles that don't carry configuration.
+                    let Some(config_dir) = self.config_dir.as_ref() else {
+                        continue;
+                    };
+                    std::fs::create_dir_all(config_dir)?;
+
+                    // Two forms are supported:
+                    //   - "config.toml"          → legacy single-file form
+                    //   - "config/<filename>"    → snapshot multi-file form
+                    let filename = if section.path == "config.toml" {
+                        "frostmirror.toml"
+                    } else if let Some(rest) = section.path.strip_prefix("config/") {
+                        if rest.is_empty() || rest.contains("..") || rest.contains('/') {
+                            anyhow::bail!("invalid config section path: {}", section.path);
+                        }
+                        rest
+                    } else {
+                        anyhow::bail!("unrecognized config section path: {}", section.path);
+                    };
+                    let dest = config_dir.join(filename);
                     std::fs::write(&dest, &section.data)?;
                 }
             }
@@ -97,10 +134,13 @@ impl Importer {
         // We walk the temp dir and rename each file into its final location.
         self.merge_into_mirror(temp_dir.path())?;
 
-        // Store the latest manifest
-        let manifest_json = manifest.to_json()?;
+        // Store a cumulative mirror manifest. The bundle's own manifest only
+        // describes what the bundle ships (potentially a delta); the mirror
+        // manifest must describe everything actually on disk so that GC,
+        // status, and append-on-proxy stay correct across import chains.
         let manifest_path = self.mirror_dir.join("manifest.json");
-        std::fs::write(&manifest_path, manifest_json)?;
+        let merged = merge_with_existing(&manifest_path, manifest)?;
+        std::fs::write(&manifest_path, merged.to_json()?)?;
 
         // Write the index config.json for sparse protocol
         self.write_index_config()?;
@@ -191,6 +231,48 @@ impl Importer {
             last_import,
         })
     }
+}
+
+/// Merge the bundle's manifest into whatever manifest already lives at
+/// `manifest_path`. The bundle's entries layer on top — newer SHAs/sizes win
+/// on key collision — and the bundle's metadata (`created`, `bundle_type`,
+/// `parent`, `targets`, `toolchain`) becomes the merged manifest's metadata
+/// so consumers see the latest import as the active one. `rustup` and `dist`
+/// vectors dedupe by their stable identifier so repeated imports don't grow
+/// duplicate entries.
+fn merge_with_existing(manifest_path: &Path, bundle: &Manifest) -> Result<Manifest> {
+    let mut merged = if manifest_path.exists() {
+        let content = std::fs::read_to_string(manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        Manifest::from_json(&content).unwrap_or_else(|_| bundle.clone())
+    } else {
+        bundle.clone()
+    };
+
+    merged.created = bundle.created.clone();
+    merged.bundle_type = bundle.bundle_type;
+    merged.parent = bundle.parent.clone();
+    merged.targets = bundle.targets.clone();
+    merged.toolchain = bundle.toolchain.clone();
+
+    for (key, entry) in &bundle.crates {
+        merged.crates.insert(key.clone(), entry.clone());
+    }
+
+    for entry in &bundle.rustup {
+        merged
+            .rustup
+            .retain(|e| !(e.target == entry.target && e.filename == entry.filename));
+        merged.rustup.push(entry.clone());
+    }
+
+    for entry in &bundle.dist {
+        merged.dist.retain(|e| e.path != entry.path);
+        merged.dist.push(entry.clone());
+    }
+
+    merged.seal();
+    Ok(merged)
 }
 
 #[derive(Debug, Clone)]

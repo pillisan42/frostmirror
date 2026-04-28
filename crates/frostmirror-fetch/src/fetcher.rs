@@ -4,7 +4,7 @@ use frostmirror_core::depends::DependsToml;
 use frostmirror_core::manifest::{BundleType, Manifest};
 use frostmirror_core::resolver::{ResolvedCrate, ResolvedGraph};
 use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::index::{self, SparseIndex};
 use crate::rustup;
@@ -15,6 +15,9 @@ pub struct FetchConfig {
     pub output_dir: PathBuf,
     pub incremental: bool,
     pub history_dir: PathBuf,
+    /// Skip downloading rustup-init binaries and toolchain components.
+    /// The resulting bundle has empty rustup/dist sections.
+    pub skip_rustup: bool,
     /// Override the crates.io index URL (for testing with mock registries).
     pub registry_url: Option<String>,
     /// Override the crate download base URL.
@@ -24,19 +27,65 @@ pub struct FetchConfig {
 }
 
 impl FetchConfig {
-    pub fn from_env(depends_path: PathBuf, output_dir: PathBuf, incremental: bool) -> Self {
-        let home = frostmirror_core::FrostmirrorConfig::home_dir();
+    pub fn from_env(
+        depends_path: PathBuf,
+        output_dir: PathBuf,
+        incremental: bool,
+        skip_rustup: bool,
+    ) -> Self {
         Self {
             depends_path,
             output_dir,
             incremental,
-            history_dir: std::env::var("FROSTMIRROR_HISTORY")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home.join("history")),
+            history_dir: default_history_dir(),
+            skip_rustup,
             registry_url: std::env::var("FROSTMIRROR_REGISTRY_URL").ok(),
             dl_url: std::env::var("FROSTMIRROR_DL_URL").ok(),
             dist_url: std::env::var("FROSTMIRROR_DIST_URL").ok(),
         }
+    }
+}
+
+/// Resolve the history directory the same way `FetchConfig::from_env` does.
+pub fn default_history_dir() -> PathBuf {
+    std::env::var("FROSTMIRROR_HISTORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| frostmirror_core::FrostmirrorConfig::home_dir().join("history"))
+}
+
+/// Returns true when the most recent manifest in `history_dir` already contains
+/// rustup-init or toolchain-distribution entries — i.e. a fresh fetch would be
+/// re-downloading rustup data.
+pub fn latest_manifest_has_rustup(history_dir: &Path) -> bool {
+    match load_latest_manifest_in(history_dir) {
+        Ok(Some(m)) => !m.rustup.is_empty() || !m.dist.is_empty(),
+        _ => false,
+    }
+}
+
+fn load_latest_manifest_in(history_dir: &Path) -> Result<Option<Manifest>> {
+    if !history_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut manifests: Vec<_> = std::fs::read_dir(history_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    manifests.sort_by_key(|e| e.file_name());
+
+    if let Some(latest) = manifests.last() {
+        let content = std::fs::read_to_string(latest.path())?;
+        let manifest = Manifest::from_json(&content)?;
+        Ok(Some(manifest))
+    } else {
+        Ok(None)
     }
 }
 
@@ -90,20 +139,25 @@ impl Fetcher {
         let graph = self.resolve_with_cargo(&depends).await?;
         tracing::info!("resolved {} total crates via cargo", graph.crate_count());
 
-        // Determine which crates to download
-        let to_download = if let Some(ref prev) = previous_manifest {
+        // Bundle contents: every resolved crate, every time. The
+        // `bundle_type` field still records whether this fetch ran in
+        // incremental mode, but the bundle itself is self-contained — a
+        // delta bundle that only ships the diff is unsafe because clients
+        // get a 404 on transitive crates whose .crate file lives in a
+        // parent bundle they may not have imported.
+        let full_set = graph.crate_set();
+        if let Some(ref prev) = previous_manifest {
             let prev_set = prev.crate_set();
-            let curr_set = graph.crate_set();
-            let delta: BTreeSet<_> = curr_set.difference(&prev_set).cloned().collect();
+            let new_count = full_set.difference(&prev_set).count();
             tracing::info!(
-                "incremental: {} new crates (delta from {})",
-                delta.len(),
+                "downloading {} crates ({} new since previous bundle of {})",
+                full_set.len(),
+                new_count,
                 prev_set.len()
             );
-            delta
         } else {
-            graph.crate_set()
-        };
+            tracing::info!("downloading {} crates (full bundle)", full_set.len());
+        }
 
         // Create manifest
         let mut manifest = Manifest::new(
@@ -129,7 +183,7 @@ impl Fetcher {
             SparseIndex::crates_io()
         };
 
-        for (name, version) in &to_download {
+        for (name, version) in &full_set {
             let crate_data =
                 index::download_crate(&self.client, dl_base, name, version).await?;
             let sha = bundle::sha256_hex(&crate_data);
@@ -179,13 +233,70 @@ impl Fetcher {
             }
         }
 
-        // Download rustup artifacts.
+        if self.config.skip_rustup {
+            tracing::info!(
+                "skipping rustup download (rustup-init + toolchain components)"
+            );
+        } else {
+            self.fetch_rustup_data(
+                &depends,
+                bundle_type,
+                previous_manifest.as_ref(),
+                &mut manifest,
+                &mut builder,
+            )
+            .await;
+        }
+
+        // Generate cargo config.toml for clients
+        let base_url = std::env::var("FROSTMIRROR_BASE_URL")
+            .unwrap_or_else(|_| "http://frostmirror.internal:8080".to_string());
+        let cargo_config = format!(
+            r#"[source.frostmirror]
+registry = "sparse+{base_url}/index/"
+
+[source.crates-io]
+replace-with = "frostmirror"
+"#
+        );
+        builder.add_config(&cargo_config);
+
+        // Seal and write
+        manifest.seal();
+        builder.add_manifest(&manifest)?;
+
+        std::fs::create_dir_all(&self.config.output_dir)?;
+        let filename = bundle::pkg_filename();
+        let output_path = self.config.output_dir.join(&filename);
+        builder.write_to_file(&output_path)?;
+
+        tracing::info!("wrote bundle to {}", output_path.display());
+
+        // Save manifest to history
+        std::fs::create_dir_all(&self.config.history_dir)?;
+        let history_name = filename.replace("-crates.pkg", "-manifest.json");
+        let history_path = self.config.history_dir.join(history_name);
+        std::fs::write(&history_path, manifest.to_json()?)?;
+
+        Ok(output_path)
+    }
+
+    /// Download rustup-init binaries and toolchain components for the
+    /// configured targets, recording each in `manifest` and `builder`.
+    /// Failures are logged and skipped rather than propagated.
+    async fn fetch_rustup_data(
+        &self,
+        depends: &DependsToml,
+        bundle_type: BundleType,
+        previous_manifest: Option<&Manifest>,
+        manifest: &mut Manifest,
+        builder: &mut BundleBuilder,
+    ) {
         // Full: all targets. Delta: only new targets.
         let rustup_targets: Vec<String> = if bundle_type == BundleType::Full {
             depends.platforms.targets.clone()
         } else {
             let prev_targets: HashSet<String> = previous_manifest
-                .as_ref()
                 .map(|m| m.rustup.iter().map(|r| r.target.clone()).collect())
                 .unwrap_or_default();
             depends
@@ -242,7 +353,6 @@ impl Fetcher {
         .await
         {
             Ok(manifest_toml) => {
-                // Store the channel manifest itself
                 let manifest_path = format!("channel-rust-{}.toml", channel);
                 let sha = bundle::sha256_hex(manifest_toml.as_bytes());
                 manifest.add_dist(
@@ -252,7 +362,6 @@ impl Fetcher {
                 );
                 builder.add_dist_file(&manifest_path, manifest_toml.as_bytes().to_vec());
 
-                // Parse manifest and download all components for our targets
                 match rustup::parse_channel_manifest(
                     &manifest_toml,
                     &depends.platforms.targets,
@@ -300,38 +409,6 @@ impl Fetcher {
                 tracing::warn!("failed to download channel manifest: {}", e);
             }
         }
-
-        // Generate cargo config.toml for clients
-        let base_url = std::env::var("FROSTMIRROR_BASE_URL")
-            .unwrap_or_else(|_| "http://frostmirror.internal:8080".to_string());
-        let cargo_config = format!(
-            r#"[source.frostmirror]
-registry = "sparse+{base_url}/index/"
-
-[source.crates-io]
-replace-with = "frostmirror"
-"#
-        );
-        builder.add_config(&cargo_config);
-
-        // Seal and write
-        manifest.seal();
-        builder.add_manifest(&manifest)?;
-
-        std::fs::create_dir_all(&self.config.output_dir)?;
-        let filename = bundle::pkg_filename();
-        let output_path = self.config.output_dir.join(&filename);
-        builder.write_to_file(&output_path)?;
-
-        tracing::info!("wrote bundle to {}", output_path.display());
-
-        // Save manifest to history
-        std::fs::create_dir_all(&self.config.history_dir)?;
-        let history_name = filename.replace("-crates.pkg", "-manifest.json");
-        let history_path = self.config.history_dir.join(history_name);
-        std::fs::write(&history_path, manifest.to_json()?)?;
-
-        Ok(output_path)
     }
 
     /// Resolve dependencies using a two-pass strategy:
@@ -524,29 +601,7 @@ publish = false
     }
 
     fn load_latest_manifest(&self) -> Result<Option<Manifest>> {
-        if !self.config.history_dir.exists() {
-            return Ok(None);
-        }
-
-        let mut manifests: Vec<_> = std::fs::read_dir(&self.config.history_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "json")
-                    .unwrap_or(false)
-            })
-            .collect();
-
-        manifests.sort_by_key(|e| e.file_name());
-
-        if let Some(latest) = manifests.last() {
-            let content = std::fs::read_to_string(latest.path())?;
-            let manifest = Manifest::from_json(&content)?;
-            Ok(Some(manifest))
-        } else {
-            Ok(None)
-        }
+        load_latest_manifest_in(&self.config.history_dir)
     }
 
     fn latest_manifest_pkg_name(&self) -> Option<String> {

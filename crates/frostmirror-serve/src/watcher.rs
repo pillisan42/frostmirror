@@ -9,6 +9,7 @@ use std::time::Duration;
 pub struct IncomingWatcher {
     incoming_dir: PathBuf,
     mirror_dir: PathBuf,
+    config_dir: Option<PathBuf>,
 }
 
 impl IncomingWatcher {
@@ -16,7 +17,15 @@ impl IncomingWatcher {
         Self {
             incoming_dir,
             mirror_dir,
+            config_dir: None,
         }
+    }
+
+    /// When set, snapshot bundles dropped into the incoming directory will
+    /// have their Config sections written to this directory.
+    pub fn with_config_dir(mut self, config_dir: PathBuf) -> Self {
+        self.config_dir = Some(config_dir);
+        self
     }
 
     /// Start watching. Runs a blocking loop on a dedicated thread so it never
@@ -28,12 +37,13 @@ impl IncomingWatcher {
 
         let incoming_dir = self.incoming_dir.clone();
         let mirror_dir = self.mirror_dir.clone();
+        let config_dir = self.config_dir.clone();
 
         // Run the entire watcher loop on a dedicated blocking thread so the
         // async runtime (and therefore the HTTP server / UI) stays responsive.
         tokio::task::spawn_blocking(move || {
             // Process any existing .pkg files first
-            process_existing(&incoming_dir, &mirror_dir);
+            process_existing(&incoming_dir, &mirror_dir, config_dir.as_deref());
 
             let (tx, rx) = mpsc::channel();
             let mut watcher = match RecommendedWatcher::new(
@@ -70,12 +80,12 @@ impl IncomingWatcher {
                         ) {
                             // Wait a moment for the file write to complete
                             std::thread::sleep(Duration::from_secs(2));
-                            process_existing(&incoming_dir, &mirror_dir);
+                            process_existing(&incoming_dir, &mirror_dir, config_dir.as_deref());
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // Periodic check for any .pkg files that might have been missed
-                        process_existing(&incoming_dir, &mirror_dir);
+                        process_existing(&incoming_dir, &mirror_dir, config_dir.as_deref());
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         tracing::error!("watcher channel disconnected");
@@ -92,7 +102,7 @@ impl IncomingWatcher {
 
 /// Process all `.pkg` files currently sitting in the incoming directory.
 /// Runs entirely on a blocking thread -- no async, no tokio runtime interaction.
-fn process_existing(incoming_dir: &PathBuf, mirror_dir: &PathBuf) {
+fn process_existing(incoming_dir: &PathBuf, mirror_dir: &PathBuf, config_dir: Option<&std::path::Path>) {
     let entries: Vec<_> = match std::fs::read_dir(incoming_dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
@@ -119,7 +129,10 @@ fn process_existing(incoming_dir: &PathBuf, mirror_dir: &PathBuf) {
 
         tracing::info!("detected package: {}", filename);
 
-        let importer = Importer::new(mirror_dir.clone());
+        let importer = match config_dir {
+            Some(dir) => Importer::new(mirror_dir.clone()).with_config_dir(dir.to_path_buf()),
+            None => Importer::new(mirror_dir.clone()),
+        };
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             importer.import(&path)
         })) {

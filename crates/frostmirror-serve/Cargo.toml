@@ -23,3 +23,6 @@ chrono = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 walkdir = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }

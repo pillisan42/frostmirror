@@ -41,7 +41,7 @@ impl SectionKind {
             SectionKind::Rustup
         } else if path.starts_with("dist/") {
             SectionKind::Dist
-        } else if path == "config.toml" {
+        } else if path == "config.toml" || path.starts_with("config/") {
             SectionKind::Config
         } else {
             SectionKind::Crate // fallback
@@ -114,6 +114,17 @@ impl BundleBuilder {
             SectionKind::Config,
             "config.toml".to_string(),
             config_toml.as_bytes().to_vec(),
+        );
+    }
+
+    /// Add a named config file under the `config/` prefix. Used by snapshot
+    /// exports to bundle multiple files (e.g. `frostmirror.toml`,
+    /// `depends.toml`) so the importer can place them back into the config dir.
+    pub fn add_config_file(&mut self, filename: &str, data: Vec<u8>) {
+        self.add_section(
+            SectionKind::Config,
+            format!("config/{}", filename),
+            data,
         );
     }
 
@@ -381,5 +392,36 @@ mod tests {
         assert_eq!(bundle.sections.len(), 4);
 
         BundleReader::verify(&bundle).unwrap();
+    }
+
+    #[test]
+    fn test_config_file_roundtrip() {
+        let mut manifest = Manifest::new(
+            BundleType::Full,
+            None,
+            vec!["x86_64-unknown-linux-gnu".into()],
+            "stable".into(),
+        );
+        manifest.seal();
+
+        let mut builder = BundleBuilder::new();
+        builder.add_manifest(&manifest).unwrap();
+        builder.add_config_file("frostmirror.toml", b"base_url = \"x\"".to_vec());
+        builder.add_config_file("depends.toml", b"[dependencies]\n".to_vec());
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        builder.write_to_file(tmp.path()).unwrap();
+
+        let bundle = BundleReader::read_file(tmp.path()).unwrap();
+        let config_sections: Vec<_> = bundle
+            .sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Config)
+            .collect();
+        assert_eq!(config_sections.len(), 2);
+        let paths: std::collections::BTreeSet<_> =
+            config_sections.iter().map(|s| s.path.as_str()).collect();
+        assert!(paths.contains("config/frostmirror.toml"));
+        assert!(paths.contains("config/depends.toml"));
     }
 }

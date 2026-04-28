@@ -1,4 +1,5 @@
 pub mod api;
+pub mod proxy;
 pub mod registry;
 pub mod server;
 pub mod watcher;

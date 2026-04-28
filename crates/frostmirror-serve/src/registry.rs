@@ -4,8 +4,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use frostmirror_core::manifest::{BundleType, Manifest};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+use crate::proxy;
 use crate::server::SharedState;
 
 /// Routes for the Cargo sparse registry protocol and rustup dist serving.
@@ -35,7 +38,7 @@ pub fn routes(state: SharedState) -> Router {
         .nest("/crates", crates_router)
         .nest("/dist", dist_router)
         // Rustup dist
-        .route("/rustup/dist/:target/:filename", get(rustup_dist))
+        .route("/rustup/dist/{target}/{filename}", get(rustup_dist))
         .with_state(state)
 }
 
@@ -67,7 +70,12 @@ async fn index_fallback(State(state): State<SharedState>, req: Request) -> Respo
     }
 
     let file_path = state.mirror_dir.join("index").join(relative);
-    serve_file(&file_path, "text/plain").await
+    let upstream_url = format!(
+        "{}/{}",
+        state.proxy_index_url.trim_end_matches('/'),
+        relative
+    );
+    serve_or_proxy(&state, &file_path, "text/plain", upstream_url, UpstreamKind::Index).await
 }
 
 /// Fallback handler for crate downloads.
@@ -88,7 +96,21 @@ async fn crates_fallback(State(state): State<SharedState>, req: Request) -> Resp
     // Expected format: {name}/{version}/download
     // Serve the file directly from mirror/crates/{relative}
     let file_path = state.mirror_dir.join("crates").join(relative);
-    serve_file(&file_path, "application/octet-stream").await
+    let upstream_url = format!(
+        "{}/{}",
+        state.proxy_dl_url.trim_end_matches('/'),
+        relative
+    );
+    serve_or_proxy(
+        &state,
+        &file_path,
+        "application/octet-stream",
+        upstream_url,
+        UpstreamKind::Crate {
+            relative: relative.to_string(),
+        },
+    )
+    .await
 }
 
 /// Fallback handler for toolchain distribution files.
@@ -115,13 +137,22 @@ async fn dist_fallback(State(state): State<SharedState>, req: Request) -> Respon
         "application/octet-stream"
     };
 
-    serve_file(&file_path, content_type).await
+    let upstream_url = format!(
+        "{}/dist/{}",
+        state.proxy_dist_url.trim_end_matches('/'),
+        relative
+    );
+    serve_or_proxy(&state, &file_path, content_type, upstream_url, UpstreamKind::Dist).await
 }
 
 async fn rustup_dist(
     State(state): State<SharedState>,
     Path((target, filename)): Path<(String, String)>,
-) -> impl IntoResponse {
+) -> Response {
+    if target.contains("..") || filename.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    }
+
     let file_path = state
         .mirror_dir
         .join("rustup")
@@ -129,22 +160,128 @@ async fn rustup_dist(
         .join(&target)
         .join(&filename);
 
-    serve_file(&file_path, "application/octet-stream").await
+    let upstream_url = format!(
+        "{}/rustup/dist/{}/{}",
+        state.proxy_dist_url.trim_end_matches('/'),
+        target,
+        filename
+    );
+    serve_or_proxy(
+        &state,
+        &file_path,
+        "application/octet-stream",
+        upstream_url,
+        UpstreamKind::Rustup,
+    )
+    .await
 }
 
-async fn serve_file(path: &PathBuf, content_type: &str) -> Response {
-    tracing::debug!("serving file: {}", path.display());
+#[derive(Debug)]
+enum UpstreamKind {
+    Index,
+    Crate { relative: String },
+    Dist,
+    Rustup,
+}
 
-    match tokio::fs::read(path).await {
-        Ok(data) => {
-            let mut headers = HeaderMap::new();
-            headers.insert("content-type", content_type.parse().unwrap());
-            headers.insert("content-length", data.len().to_string().parse().unwrap());
-            (StatusCode::OK, headers, Body::from(data)).into_response()
-        }
+/// Serve `path` from disk, or — when `proxy_mode` is enabled and the file is
+/// missing — fetch from `upstream_url`, cache it to `path`, and serve the
+/// freshly downloaded bytes.
+async fn serve_or_proxy(
+    state: &SharedState,
+    path: &PathBuf,
+    content_type: &str,
+    upstream_url: String,
+    kind: UpstreamKind,
+) -> Response {
+    // Cache hit: serve from disk.
+    if let Ok(data) = tokio::fs::read(path).await {
+        return ok_response(data, content_type);
+    }
+
+    // Cache miss + proxy off → 404 (matches the offline workflow).
+    if !state.proxy_mode {
+        tracing::debug!("file not found: {}", path.display());
+        return (
+            StatusCode::NOT_FOUND,
+            format!("not found: {}", path.display()),
+        )
+            .into_response();
+    }
+
+    // Cache miss + proxy on → fetch upstream.
+    let bytes = match proxy::fetch_and_cache(&state.http_client, &upstream_url, path).await {
+        Ok(b) => b,
         Err(e) => {
-            tracing::debug!("file not found: {} ({})", path.display(), e);
-            (StatusCode::NOT_FOUND, format!("not found: {}", path.display())).into_response()
+            tracing::warn!("proxy fetch failed for {}: {:#}", upstream_url, e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("upstream fetch failed: {}", e),
+            )
+                .into_response();
+        }
+    };
+
+    // For crates, persist the entry into manifest.json so GC keeps it.
+    if let UpstreamKind::Crate { relative } = &kind {
+        if let Some((name, version)) = parse_crate_relative(relative) {
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let sha = hex::encode(hasher.finalize());
+            let size = bytes.len() as u64;
+            if let Err(e) = append_crate_to_manifest(state, &name, &version, sha, size).await {
+                // Non-fatal: the crate is cached and serving fine, but log
+                // loudly so operators notice manifest drift.
+                tracing::error!(
+                    "failed to record proxy-cached crate {}-{} in manifest: {:#}",
+                    name, version, e
+                );
+            }
         }
     }
+
+    ok_response(bytes, content_type)
+}
+
+fn ok_response(data: Vec<u8>, content_type: &str) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", content_type.parse().unwrap());
+    headers.insert("content-length", data.len().to_string().parse().unwrap());
+    (StatusCode::OK, headers, Body::from(data)).into_response()
+}
+
+/// Parse `{name}/{version}/download` into `(name, version)`.
+fn parse_crate_relative(relative: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = relative.split('/').collect();
+    if parts.len() == 3 && parts[2] == "download" && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else {
+        None
+    }
+}
+
+/// Append a proxy-cached crate to mirror/manifest.json under the manifest_lock.
+async fn append_crate_to_manifest(
+    state: &SharedState,
+    name: &str,
+    version: &str,
+    sha256: String,
+    size: u64,
+) -> anyhow::Result<()> {
+    let _guard = state.manifest_lock.lock().await;
+    let manifest_path = state.mirror_dir.join("manifest.json");
+
+    let mut manifest = if manifest_path.exists() {
+        let content = tokio::fs::read_to_string(&manifest_path).await?;
+        Manifest::from_json(&content)?
+    } else {
+        Manifest::new(BundleType::Full, None, Vec::new(), "stable".to_string())
+    };
+
+    manifest.add_crate(name.to_string(), version.to_string(), sha256, size);
+    manifest.seal();
+
+    let json = manifest.to_json()?;
+    tokio::fs::write(&manifest_path, json).await?;
+    Ok(())
 }

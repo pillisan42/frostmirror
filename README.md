@@ -1,6 +1,6 @@
 # Frostmirror
 
-<div style="width:15%; margin: auto;">
+<div style="width:100px; margin: auto;">
 
 ![Dual Mode](/resources/frostmirror_icon.svg)
 
@@ -8,14 +8,14 @@
 
 A lightweight, dependency-scoped Rust mirror tool designed for air-gapped environments.
 
-<div style="width:50%; margin: auto;">
+<div style="width:500px; margin: auto;">
 
 ![Dual Mode](/resources/frostmirror_dual_mode.svg)
 
 </div>
 Unlike tools that mirror all of crates.io (panamax) or all of rustup (romt), frostmirror only fetches the crates required to build your specific project. It delegates dependency resolution to cargo itself, downloads exactly what is needed, and packages everything into a single timestamped `.pkg` bundle compressed with brotli. Bundles are designed for incremental transfer across an air gap -- only the delta since the last bundle needs to be transported.
 
-<div style="width:50%; margin: auto;">
+<div style="width:500px; margin: auto;">
 
 ![Update flow](/resources/frostmirror_airgap_update_flow.svg)
 
@@ -34,6 +34,8 @@ This project was created with Claude code. I publish it to help others people th
 - [Docker Usage](#docker-usage)
 - [Docker Image Scripts](#docker-image-scripts)
 - [Air-Gap Workflow](#air-gap-workflow)
+- [Live-Mirror Mode](#live-mirror-mode)
+- [Snapshot Export & Redeployment](#snapshot-export--redeployment)
 - [Web UI](#web-ui)
 - [API Reference](#api-reference)
 - [Client Configuration](#client-configuration)
@@ -352,11 +354,15 @@ frostmirror import <FILE> [OPTIONS]
 | Option | Default | Description |
 |---|---|---|
 | `--mirror <DIR>` | `/mirror` | Mirror directory |
+| `--config-dir <DIR>` | `/config` | Where to restore `frostmirror.toml` / `depends.toml` from a snapshot bundle (no effect on regular fetch bundles) |
 
 **Examples:**
 
 ```bash
 frostmirror import 20260402-2130-crates.pkg --mirror /data/mirror
+
+# Importing a full snapshot (mirror + config)
+frostmirror import snapshot-20260428-1530.pkg --mirror /data/mirror --config-dir /data/config
 ```
 
 ### `frostmirror serve`
@@ -585,6 +591,96 @@ Each entry is resolved independently, so conflicting requirements don't cause er
 
 ---
 
+## Live-Mirror Mode
+
+Frostmirror's default workflow is strictly offline: an online machine produces `.pkg` bundles, the offline machine imports them, and the registry serves only what was bundled. When your registry server *does* have internet access — typical for a shared developer cache or a region-local CI mirror — you can enable **live-mirror mode** so missing crates are fetched from upstream on demand and cached locally for everyone else.
+
+### How it works
+
+With `proxy_mode = true`, every registry handler (sparse index, crate downloads, rustup-init binaries, toolchain dist files) serves from disk on a cache hit and falls back to upstream on a cache miss. Fetched bytes are written atomically to the mirror, served to the requesting client, and — for crates — recorded in `manifest.json` so garbage collection treats them as first-class entries (and won't sweep them away).
+
+With `proxy_mode = false` (the default), a cache miss returns `404`. The offline workflow is unchanged.
+
+### Enable from the web UI
+
+1. Open `http://your-mirror:8080/config`
+2. Find the **Live-mirror (proxy upstream)** fieldset
+3. Tick **Enable live-mirror**
+4. Optionally adjust the upstream URLs (defaults shown below)
+5. Click **Save Configuration**
+6. Restart the server for the change to take effect
+
+### Or edit `frostmirror.toml` directly
+
+```toml
+proxy_mode = true
+proxy_index_url = "https://index.crates.io"
+proxy_dl_url   = "https://static.crates.io/crates"
+proxy_dist_url = "https://static.rust-lang.org"
+```
+
+Then restart the server.
+
+### When to use it
+
+| Scenario | Why live-mirror helps |
+|---|---|
+| **Shared developer cache** | A team points cargo at the same frostmirror; each crate is downloaded from crates.io exactly once and reused by everyone after that. |
+| **Bootstrap an air-gap mirror** | Run with proxy on while your team works normally — the mirror fills with exactly the crates actually used. Disable proxy, run `gc`, snapshot the result, and ship that to the offline site. |
+| **Region-local CI cache** | A nearby frostmirror with proxy on shaves seconds off every cold-cache build and reduces crates.io load. |
+
+### When to keep it off
+
+Strict air-gap deployments, regulated networks, or any environment where the registry must never make outbound HTTP. Live-mirror is opt-in by design — you have to flip it on.
+
+### Caveats
+
+- The registry needs outbound HTTPS to the configured upstream hosts.
+- The first request for any crate, index entry, or toolchain file pays the upstream latency. Subsequent requests are local-disk speed.
+- Rustup channel manifests are cached as ordinary dist files; if upstream publishes a new stable, your mirror keeps serving the cached manifest until something invalidates it (currently: delete `mirror/dist/channel-rust-stable.toml` and let the next request re-pull).
+- Garbage collection still uses `manifest.json`. Proxy-cached crates are appended automatically, but if you bypass the registry handler (e.g. drop files into `mirror/crates/` manually), GC won't know about them.
+
+---
+
+## Snapshot Export & Redeployment
+
+Once a frostmirror instance is populated — whether by importing `.pkg` bundles or by accumulating crates via live-mirror mode — you can package the entire instance (mirror + configuration) into a single `.pkg` and redeploy it on a fresh server.
+
+### Create a snapshot from the web UI
+
+1. Open `http://your-mirror:8080/packages`
+2. Click **Create Snapshot**
+3. Wait for the build to finish (large mirrors take a moment — the server walks every file and computes SHA-256)
+4. Click the **Download** link in the snapshots table
+
+The snapshot includes:
+
+- All `.crate` files under `mirror/crates/`
+- All sparse index entries under `mirror/index/`
+- All rustup-init binaries under `mirror/rustup/dist/`
+- All toolchain dist files under `mirror/dist/`
+- `frostmirror.toml` and `depends.toml` from `/config/`
+
+### Redeploy on another server
+
+Drop the downloaded `snapshot-*.pkg` into the new server's `incoming/` directory. The watcher imports it automatically — mirror data lands in `/mirror/`, and `frostmirror.toml` + `depends.toml` are restored to `/config/`.
+
+For manual import:
+
+```bash
+frostmirror import snapshot-20260428-1530.pkg --mirror /mirror --config-dir /config
+```
+
+After import, `frostmirror serve` on the new host serves the same registry as the source.
+
+### Use cases
+
+- **Hardware migration.** Move a frostmirror instance to new hardware without re-running every historical bundle.
+- **Replication.** Stand up a hot-spare in another data center.
+- **Bootstrap from live-mirror.** Run live-mirror mode at HQ to accumulate exactly what your team uses, snapshot it, then ship the snapshot to an air-gapped site that runs strictly offline.
+
+---
+
 ## Web UI
 
 The web UI is served at the root URL (`http://frostmirror.internal:8080/`). No extra service or port required.
@@ -593,9 +689,9 @@ The web UI is served at the root URL (`http://frostmirror.internal:8080/`). No e
 |---|---|---|
 | **Dashboard** | `/` | Crate count, mirror size, last import, watcher state, failed count |
 | **Dependencies** | `/deps` | Edit `depends.toml` with a table UI, live TOML preview |
-| **Configuration** | `/config` | Registry URL, bind address, targets, behavior toggles |
-| **Packages** | `/packages` | Import history, bundle sizes, GC button |
-| **Client Setup** | `/setup` | Generated shell commands and downloadable config files |
+| **Configuration** | `/config` | Registry URL, bind address, targets, behavior toggles, live-mirror proxy settings |
+| **Packages** | `/packages` | Import history, bundle sizes, GC button, **Create Snapshot** |
+| **Client Setup** | `/setup` | Generated shell commands, downloadable config files, SSL revocation tip |
 
 The Dashboard auto-refreshes every 30 seconds. The `failed` count is the primary operational alert -- if non-zero, inspect `./incoming/failed/`.
 
@@ -615,7 +711,11 @@ All API endpoints are served by the same process as the registry.
 | `POST` | `/api/deps` | Write new depends.toml |
 | `GET` | `/api/incoming` | Watcher state, done/failed counts |
 | `POST` | `/api/gc` | Trigger garbage collection |
+| `POST` | `/api/export` | Build a snapshot of the running instance (mirror + config) |
+| `GET` | `/api/export` | List previously-built snapshots in `incoming/exports/` |
+| `GET` | `/api/export/download/{filename}` | Download a snapshot `.pkg` |
 | `GET` | `/api/setup/cargo-config` | Download cargo config.toml |
+| `GET` | `/api/setup/cargo-config?check_revoke=false` | Same, with `[http] check-revoke = false` appended |
 | `GET` | `/api/setup/rustup-env.sh` | Download shell env script |
 | `GET` | `/api/setup/rustup-env.ps1` | Download PowerShell env script |
 

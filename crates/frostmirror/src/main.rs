@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "frostmirror")]
@@ -26,6 +27,14 @@ enum Commands {
         /// Only download crates not in the previous bundle (delta)
         #[arg(long)]
         incremental: bool,
+
+        /// Skip downloading rustup-init binaries and toolchain components
+        #[arg(long, conflicts_with = "include_rustup")]
+        skip_rustup: bool,
+
+        /// Force download of rustup data (suppress the interactive prompt)
+        #[arg(long)]
+        include_rustup: bool,
     },
 
     /// Import a .pkg bundle into the local mirror
@@ -36,6 +45,12 @@ enum Commands {
         /// Mirror directory
         #[arg(long, env = "FROSTMIRROR_MIRROR", default_value = "/mirror")]
         mirror: PathBuf,
+
+        /// Config directory. When importing a snapshot bundle, frostmirror.toml
+        /// and depends.toml from the bundle are written here. Has no effect on
+        /// regular fetch-produced bundles, which carry no config sections.
+        #[arg(long, default_value = "/config")]
+        config_dir: PathBuf,
     },
 
     /// Start the HTTP registry server
@@ -98,16 +113,28 @@ async fn main() -> Result<()> {
             config,
             output,
             incremental,
+            skip_rustup,
+            include_rustup,
         } => {
-            let fetch_config =
-                frostmirror_fetch::fetcher::FetchConfig::from_env(config, output, incremental);
+            let history_dir = frostmirror_fetch::default_history_dir();
+            let skip = decide_skip_rustup(skip_rustup, include_rustup, &history_dir);
+            let fetch_config = frostmirror_fetch::fetcher::FetchConfig::from_env(
+                config,
+                output,
+                incremental,
+                skip,
+            );
             let fetcher = frostmirror_fetch::Fetcher::new(fetch_config);
             let pkg_path = fetcher.run().await?;
             println!("Bundle written to: {}", pkg_path.display());
         }
 
-        Commands::Import { file, mirror } => {
-            let importer = frostmirror_import::Importer::new(mirror);
+        Commands::Import {
+            file,
+            mirror,
+            config_dir,
+        } => {
+            let importer = frostmirror_import::Importer::new(mirror).with_config_dir(config_dir);
             let result = importer.import(&file)?;
             println!(
                 "Imported {} crates, {} rustup artifacts",
@@ -167,4 +194,49 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Decide whether to skip the rustup download for this fetch.
+///
+/// Precedence:
+/// 1. `--skip-rustup`        → skip.
+/// 2. `--include-rustup`     → download.
+/// 3. No prior rustup data   → download (nothing to "re"-download; no prompt).
+/// 4. Stdin not a TTY        → download (preserve old non-interactive behavior).
+/// 5. Otherwise              → prompt; default `N` (skip on Enter / non-yes input).
+fn decide_skip_rustup(skip_flag: bool, include_flag: bool, history_dir: &Path) -> bool {
+    if skip_flag {
+        return true;
+    }
+    if include_flag {
+        return false;
+    }
+    if !frostmirror_fetch::latest_manifest_has_rustup(history_dir) {
+        return false;
+    }
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+
+    let mut stdout = std::io::stdout();
+    let _ = write!(
+        stdout,
+        "Rustup data already present in the previous bundle. Redownload? [y/N]: "
+    );
+    let _ = stdout.flush();
+
+    let mut line = String::new();
+    let stdin = std::io::stdin();
+    let answer = match stdin.lock().read_line(&mut line) {
+        Ok(_) => line.trim().to_ascii_lowercase(),
+        Err(_) => String::new(),
+    };
+    let download = matches!(answer.as_str(), "y" | "yes");
+    if download {
+        eprintln!("→ including rustup data");
+        false
+    } else {
+        eprintln!("→ skipping rustup data");
+        true
+    }
 }

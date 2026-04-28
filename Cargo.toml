@@ -22,28 +22,28 @@ frostmirror-import = { path = "crates/frostmirror-import" }
 frostmirror-serve = { path = "crates/frostmirror-serve" }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.52.1", features = ["full"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1.2"
 
 # HTTP
-reqwest = { version = "0.12", features = ["rustls-tls", "stream"], default-features = false }
-axum = { version = "0.7", features = ["macros"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
+reqwest = { version = "0.13.3", features = ["rustls", "stream"], default-features = false }
+axum = { version = "0.8.9", features = ["macros"] }
+tower = "0.5.3"
+tower-http = { version = "0.6.8", features = ["fs", "cors", "trace"] }
 
 # Compression
-brotli = "6"
+brotli = "8.0.2"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11.0"
 hex = "0.4"
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
 
 # Logging
 tracing = "0.1"
@@ -51,13 +51,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
+thiserror = "2.0.18"
 
 # File watching
-notify = "6"
+notify = "8.2.0"
 
 # Semver
-semver = { version = "1", features = ["serde"] }
+semver = { version = "1.0.28", features = ["serde"] }
 
 # Misc
 chrono = { version = "0.4", features = ["serde"] }

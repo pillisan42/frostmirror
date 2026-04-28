@@ -21,6 +21,17 @@ pub struct FrostmirrorConfig {
     pub keep_failed_packages: bool,
     #[serde(default)]
     pub prune_on_import: bool,
+    /// When true, the registry server fetches missing files from upstream on
+    /// demand and caches them locally. Off by default — the offline workflow
+    /// is unchanged. Can be overridden via `FROSTMIRROR_PROXY_MODE=true`.
+    #[serde(default = "default_proxy_mode")]
+    pub proxy_mode: bool,
+    #[serde(default = "default_proxy_index_url")]
+    pub proxy_index_url: String,
+    #[serde(default = "default_proxy_dl_url")]
+    pub proxy_dl_url: String,
+    #[serde(default = "default_proxy_dist_url")]
+    pub proxy_dist_url: String,
 }
 
 fn default_base_url() -> String {
@@ -39,6 +50,30 @@ fn default_true() -> bool {
     true
 }
 
+fn default_proxy_mode() -> bool {
+    matches!(
+        std::env::var("FROSTMIRROR_PROXY_MODE")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn default_proxy_index_url() -> String {
+    "https://index.crates.io".to_string()
+}
+
+fn default_proxy_dl_url() -> String {
+    "https://static.crates.io/crates".to_string()
+}
+
+fn default_proxy_dist_url() -> String {
+    "https://static.rust-lang.org".to_string()
+}
+
 impl Default for FrostmirrorConfig {
     fn default() -> Self {
         Self {
@@ -50,6 +85,10 @@ impl Default for FrostmirrorConfig {
             verify_checksums: true,
             keep_failed_packages: true,
             prune_on_import: false,
+            proxy_mode: default_proxy_mode(),
+            proxy_index_url: default_proxy_index_url(),
+            proxy_dl_url: default_proxy_dl_url(),
+            proxy_dist_url: default_proxy_dist_url(),
         }
     }
 }

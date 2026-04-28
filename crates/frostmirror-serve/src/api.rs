@@ -1,11 +1,12 @@
-use axum::extract::State;
+use axum::body::Body;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use frostmirror_core::config::FrostmirrorConfig;
 use frostmirror_core::depends::DependsToml;
-use frostmirror_import::{GarbageCollector, Importer};
+use frostmirror_import::{Exporter, GarbageCollector, Importer};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -19,6 +20,8 @@ pub fn routes(state: SharedState) -> Router {
         .route("/api/deps", get(get_deps).post(post_deps))
         .route("/api/incoming", get(get_incoming))
         .route("/api/gc", post(post_gc))
+        .route("/api/export", post(post_export).get(get_exports))
+        .route("/api/export/download/{filename}", get(download_export))
         .route("/api/setup/cargo-config", get(get_cargo_config))
         .route("/api/setup/rustup-env.sh", get(get_rustup_env_sh))
         .route("/api/setup/rustup-env.ps1", get(get_rustup_env_ps1))
@@ -247,8 +250,20 @@ async fn post_gc(State(state): State<SharedState>) -> impl IntoResponse {
     }
 }
 
-async fn get_cargo_config(State(state): State<SharedState>) -> impl IntoResponse {
-    let config = format!(
+#[derive(Deserialize, Default)]
+struct CargoConfigQuery {
+    /// When set to "false", append `[http]\ncheck-revoke = false` so cargo
+    /// skips certificate revocation checks (workaround for misconfigured
+    /// SSL/CRL endpoints, common on Windows clients).
+    #[serde(default)]
+    check_revoke: Option<String>,
+}
+
+async fn get_cargo_config(
+    State(state): State<SharedState>,
+    Query(query): Query<CargoConfigQuery>,
+) -> impl IntoResponse {
+    let mut config = format!(
         r#"[source.frostmirror]
 registry = "sparse+{base_url}/index/"
 
@@ -257,6 +272,12 @@ replace-with = "frostmirror"
 "#,
         base_url = state.base_url
     );
+
+    if query.check_revoke.as_deref() == Some("false") {
+        config.push_str(
+            "\n[http]\n# Skip TLS revocation checks. Use only when CRL/OCSP\n# endpoints are unreachable or the mirror uses a self-signed cert.\ncheck-revoke = false\n",
+        );
+    }
 
     (
         StatusCode::OK,
@@ -314,6 +335,149 @@ $env:RUSTUP_UPDATE_ROOT = "{base_url}/rustup"
         ],
         script,
     )
+}
+
+#[derive(Serialize)]
+struct ExportSummary {
+    filename: String,
+    size: u64,
+    crate_count: usize,
+    rustup_count: usize,
+    dist_count: usize,
+}
+
+async fn post_export(State(state): State<SharedState>) -> impl IntoResponse {
+    // Single-flight guard: refuse if an export is already running. This avoids
+    // two concurrent walks competing for disk and producing redundant files.
+    {
+        let mut running = state.export_running.lock().await;
+        if *running {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "export already running"})),
+            )
+                .into_response();
+        }
+        *running = true;
+    }
+
+    let mirror_dir = state.mirror_dir.clone();
+    let config_dir = state
+        .config_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/config"));
+    let exports_dir = state.incoming_dir.join("exports");
+    let _ = std::fs::create_dir_all(&exports_dir);
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let filename = format!("snapshot-{}.pkg", timestamp);
+    let output = exports_dir.join(&filename);
+
+    // Run the export on a blocking thread — walking a large mirror and
+    // hashing every file must not stall the async runtime.
+    let result = tokio::task::spawn_blocking(move || {
+        let exporter = Exporter::new(mirror_dir).with_config_dir(config_dir);
+        exporter.export(&output)
+    })
+    .await;
+
+    *state.export_running.lock().await = false;
+
+    match result {
+        Ok(Ok(r)) => (
+            StatusCode::OK,
+            Json(serde_json::to_value(ExportSummary {
+                filename,
+                size: r.total_size,
+                crate_count: r.crate_count,
+                rustup_count: r.rustup_count,
+                dist_count: r.dist_count,
+            }).unwrap()),
+        )
+            .into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("export task failed: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct ExportListEntry {
+    filename: String,
+    size: u64,
+    created: Option<String>,
+}
+
+async fn get_exports(State(state): State<SharedState>) -> impl IntoResponse {
+    let exports_dir = state.incoming_dir.join("exports");
+    let mut entries = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&exports_dir) {
+        for entry in rd.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".pkg") {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let created = meta
+                .modified()
+                .ok()
+                .and_then(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339().into());
+            entries.push(ExportListEntry {
+                filename: name,
+                size: meta.len(),
+                created,
+            });
+        }
+    }
+    entries.sort_by(|a, b| b.filename.cmp(&a.filename));
+    Json(entries)
+}
+
+async fn download_export(
+    State(state): State<SharedState>,
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> Response {
+    // Reject any non-direct-child path. The filename comes straight from the
+    // URL — no `..`, no slashes, no NULs.
+    if filename.is_empty()
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains("..")
+        || !filename.ends_with(".pkg")
+    {
+        return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
+    }
+
+    let path = state.incoming_dir.join("exports").join(&filename);
+    match tokio::fs::read(&path).await {
+        Ok(data) => {
+            let len = data.len();
+            let headers = [
+                ("content-type", "application/octet-stream".to_string()),
+                ("content-length", len.to_string()),
+                (
+                    "content-disposition",
+                    format!("attachment; filename=\"{}\"", filename),
+                ),
+            ];
+            (StatusCode::OK, headers, Body::from(data)).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "snapshot not found").into_response(),
+    }
 }
 
 fn count_files_in(dir: &Path) -> anyhow::Result<u64> {

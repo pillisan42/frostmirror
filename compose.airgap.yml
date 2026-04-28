@@ -6,6 +6,10 @@ services:
     #frostmirror.internal
       - FROSTMIRROR_BASE_URL=http://localhost:8080
       - FROSTMIRROR_BIND=0.0.0.0:8080
+      # Set to true to let `serve` fetch missing files from upstream on demand
+      # and cache them. Off by default for true airgap. Useful in network-permissive
+      # environments to self-heal stale or partial bundles.
+      # - FROSTMIRROR_PROXY_MODE=true
     volumes:
       - ./incoming:/incoming     # host dir — drop .pkg files here
       - ./mirror:/mirror

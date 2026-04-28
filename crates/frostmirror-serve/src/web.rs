@@ -221,6 +221,17 @@ async fn config_page() -> Html<String> {
                 <label><input type="checkbox" id="cfg-keep-failed"> Keep failed packages</label>
                 <label><input type="checkbox" id="cfg-prune"> Prune on import</label>
             </fieldset>
+            <fieldset>
+                <legend>Live-mirror (proxy upstream)</legend>
+                <p class="hint">When enabled, missing crates and toolchain files are fetched from upstream on demand and cached locally. Leave off for strict offline / air-gapped operation. Restart the server after changing this setting.</p>
+                <label><input type="checkbox" id="cfg-proxy-mode"> Enable live-mirror</label>
+                <details id="cfg-proxy-details">
+                    <summary>Upstream URLs</summary>
+                    <label>Sparse index URL<input id="cfg-proxy-index" type="text" placeholder="https://index.crates.io"></label>
+                    <label>Crate download URL<input id="cfg-proxy-dl" type="text" placeholder="https://static.crates.io/crates"></label>
+                    <label>Toolchain dist URL<input id="cfg-proxy-dist" type="text" placeholder="https://static.rust-lang.org"></label>
+                </details>
+            </fieldset>
             <button class="primary" type="submit">Save Configuration</button>
         </form>
         <script>
@@ -232,10 +243,18 @@ async fn config_page() -> Html<String> {
             document.getElementById('cfg-verify').checked=c.verify_checksums;
             document.getElementById('cfg-keep-failed').checked=c.keep_failed_packages;
             document.getElementById('cfg-prune').checked=c.prune_on_import;
+            document.getElementById('cfg-proxy-mode').checked=!!c.proxy_mode;
+            document.getElementById('cfg-proxy-index').value=c.proxy_index_url||'';
+            document.getElementById('cfg-proxy-dl').value=c.proxy_dl_url||'';
+            document.getElementById('cfg-proxy-dist').value=c.proxy_dist_url||'';
+            document.getElementById('cfg-proxy-details').open=!!c.proxy_mode;
             (c.targets||[]).forEach(t=>{
                 const cb=document.querySelector(`.target-cb[value="${t}"]`);
                 if(cb)cb.checked=true;
             });
+        });
+        document.getElementById('cfg-proxy-mode').addEventListener('change',e=>{
+            document.getElementById('cfg-proxy-details').open=e.target.checked;
         });
         function saveConfig(e){
             e.preventDefault();
@@ -249,9 +268,13 @@ async fn config_page() -> Html<String> {
                 verify_checksums:document.getElementById('cfg-verify').checked,
                 keep_failed_packages:document.getElementById('cfg-keep-failed').checked,
                 prune_on_import:document.getElementById('cfg-prune').checked,
+                proxy_mode:document.getElementById('cfg-proxy-mode').checked,
+                proxy_index_url:document.getElementById('cfg-proxy-index').value||'https://index.crates.io',
+                proxy_dl_url:document.getElementById('cfg-proxy-dl').value||'https://static.crates.io/crates',
+                proxy_dist_url:document.getElementById('cfg-proxy-dist').value||'https://static.rust-lang.org',
             };
             fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)})
-            .then(r=>r.json()).then(d=>{alert(d.ok?'Saved!':'Error: '+d.error)});
+            .then(r=>r.json()).then(d=>{alert(d.ok?'Saved! Restart the server for live-mirror changes to take effect.':'Error: '+d.error)});
         }
         </script>
     "#))
@@ -261,24 +284,70 @@ async fn packages_page() -> Html<String> {
     Html(page_wrapper("Packages", "packages", r#"
         <h1>Packages</h1>
         <button onclick="runGc()">Run Garbage Collection</button>
+        <button id="snapshot-btn" onclick="createSnapshot()">Create Snapshot</button>
+
+        <h2>Imported / Failed</h2>
         <table id="pkg-table">
             <thead><tr><th>Filename</th><th>Size</th><th>Status</th></tr></thead>
             <tbody></tbody>
         </table>
+
+        <h2>Snapshots</h2>
+        <p class="hint">Self-contained <code>.pkg</code> bundles of this server's mirror + configuration. Drop one into the <code>incoming/</code> directory of another frostmirror server to redeploy.</p>
+        <table id="snap-table">
+            <thead><tr><th>Filename</th><th>Size</th><th>Created</th><th></th></tr></thead>
+            <tbody></tbody>
+        </table>
+
         <script>
+        function fmtSize(n){
+            if(n<1024)return n+' B';
+            if(n<1024*1024)return (n/1024).toFixed(1)+' KB';
+            if(n<1024*1024*1024)return (n/1024/1024).toFixed(1)+' MB';
+            return (n/1024/1024/1024).toFixed(2)+' GB';
+        }
         fetch('/api/packages').then(r=>r.json()).then(pkgs=>{
             const tb=document.querySelector('#pkg-table tbody');
             pkgs.forEach(p=>{
                 const tr=document.createElement('tr');
                 tr.className=p.status==='failed'?'row-failed':'';
-                tr.innerHTML=`<td>${p.filename}</td><td>${(p.size/1024).toFixed(1)} KB</td><td>${p.status}</td>`;
+                tr.innerHTML=`<td>${p.filename}</td><td>${fmtSize(p.size)}</td><td>${p.status}</td>`;
                 tb.appendChild(tr);
             });
         });
+        function loadSnapshots(){
+            fetch('/api/export').then(r=>r.json()).then(snaps=>{
+                const tb=document.querySelector('#snap-table tbody');
+                tb.innerHTML='';
+                snaps.forEach(s=>{
+                    const tr=document.createElement('tr');
+                    const created=s.created?new Date(s.created).toLocaleString():'-';
+                    tr.innerHTML=`<td>${s.filename}</td><td>${fmtSize(s.size)}</td><td>${created}</td><td><a href="/api/export/download/${encodeURIComponent(s.filename)}">Download</a></td>`;
+                    tb.appendChild(tr);
+                });
+            });
+        }
+        loadSnapshots();
         function runGc(){
             fetch('/api/gc',{method:'POST'}).then(r=>r.json()).then(d=>{
                 if(d.error)alert('Error: '+d.error);
-                else alert(`GC complete: removed ${d.removed} crates, freed ${(d.freed_bytes/1024/1024).toFixed(1)} MB`);
+                else alert(`GC complete: removed ${d.removed} crates, freed ${fmtSize(d.freed_bytes)}`);
+            });
+        }
+        function createSnapshot(){
+            const btn=document.getElementById('snapshot-btn');
+            btn.disabled=true;
+            btn.textContent='Building snapshot...';
+            fetch('/api/export',{method:'POST'}).then(r=>r.json()).then(d=>{
+                btn.disabled=false;
+                btn.textContent='Create Snapshot';
+                if(d.error){alert('Error: '+d.error);return;}
+                loadSnapshots();
+                alert(`Snapshot created: ${d.filename} (${fmtSize(d.size)}, ${d.crate_count} crates)`);
+            }).catch(e=>{
+                btn.disabled=false;
+                btn.textContent='Create Snapshot';
+                alert('Snapshot failed: '+e);
             });
         }
         </script>
@@ -312,8 +381,21 @@ async fn setup_page() -> Html<String> {
         <h2>3. Configure Cargo</h2>
         <pre id="cargo-snippet"></pre>
 
+        <h2>4. SSL Revocation Check (optional)</h2>
+        <p>If cargo fails with TLS or certificate-revocation errors against this
+        mirror &mdash; common on Windows when CRL/OCSP endpoints are blocked,
+        or when the mirror uses a self-signed certificate &mdash; append the
+        following to your <code>.cargo/config.toml</code>:</p>
+        <pre>[http]
+check-revoke = false</pre>
+        <p class="hint">Cargo's default for <code>check-revoke</code> is
+        <code>true</code> on Windows and <code>false</code> elsewhere. Only set
+        it to <code>false</code> when revocation checking is the actual blocker;
+        it disables a security feature.</p>
+
         <h2>Downloads</h2>
         <a class="btn" href="/api/setup/cargo-config">cargo config.toml</a>
+        <a class="btn" href="/api/setup/cargo-config?check_revoke=false">cargo config.toml (skip revocation)</a>
         <a class="btn" href="/api/setup/rustup-env.sh">rustup-env.sh</a>
         <a class="btn" href="/api/setup/rustup-env.ps1">rustup-env.ps1</a>
 
