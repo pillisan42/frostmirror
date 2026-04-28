@@ -1,12 +1,12 @@
 # Frostmirror
-
-<div style="width:100px; margin: auto;">
-
-![Dual Mode](/resources/frostmirror_icon.svg)
-
-</div>
-
+<p align="center">
+<img src="./resources/frostmirror_icon.svg" width="100" height="100" />
+</p>
 A lightweight, dependency-scoped Rust mirror tool designed for air-gapped environments.
+
+
+![Dual Mode](/resources/easy_config.png)
+
 
 <div style="width:500px; margin: auto;">
 
