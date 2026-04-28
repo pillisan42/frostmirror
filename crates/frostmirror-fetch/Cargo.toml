@@ -3,6 +3,10 @@ name = "frostmirror-fetch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
 description = "Download engine for frostmirror: crates.io sparse index and rustup dist"
 
 [dependencies]

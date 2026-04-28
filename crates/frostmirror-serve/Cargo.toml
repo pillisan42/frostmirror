@@ -3,6 +3,10 @@ name = "frostmirror-serve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
 description = "HTTP registry server and web UI for frostmirror"
 
 [dependencies]

@@ -3,6 +3,10 @@ name = "frostmirror-import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
 description = "Package extraction and mirror merge for frostmirror"
 
 [dependencies]
